@@ -2405,14 +2405,24 @@ Example: [0, 2, 5]`;
   }
 
   async connect() {
-    // Get settings from UI
-    this.gatewayUrl = this.elements.gatewayUrl.value.trim() || 'ws://127.0.0.1:18789';
-    this.authToken = this.elements.authToken.value.trim();
-    this.sessionKey = this.elements.sessionKeyInput.value.trim() || 'main';
+    // Get settings from UI only if not already set (e.g., from QR scan)
+    const uiGateway = this.elements.gatewayUrl?.value?.trim();
+    const uiToken = this.elements.authToken?.value?.trim();
+    const uiSession = this.elements.sessionKeyInput?.value?.trim();
+    
+    // Use UI values only if they're filled in, otherwise keep existing values
+    if (uiGateway) this.gatewayUrl = uiGateway;
+    if (uiToken) this.authToken = uiToken;
+    if (uiSession) this.sessionKey = uiSession;
+    
+    // Fall back to defaults if still not set
+    if (!this.gatewayUrl) this.gatewayUrl = 'ws://127.0.0.1:18789';
+    if (!this.sessionKey) this.sessionKey = 'main';
+    
     this.saveSettings();
 
     this.closeSettings();
-    this.setStatus('Connecting...');
+    this.setStatus('Connecting to ' + this.gatewayUrl);
 
     try {
       if (this.ws) {
