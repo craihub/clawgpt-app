@@ -2606,9 +2606,94 @@ body {
 }
 
 .setup-hint {
-  font-size: 12px;
+  font-size: 14px;
   color: var(--text-muted, #888);
-  margin-top: 8px;
+  margin-top: 16px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.setup-hint strong {
+  color: var(--text-color, #fff);
+}
+
+/* Mobile setup - QR scan primary */
+.setup-primary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 32px 16px;
+}
+
+.setup-scan-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 32px 48px;
+  background: var(--accent-color, #10a37f);
+  color: white;
+  border: none;
+  border-radius: 16px;
+  font-size: 20px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.setup-scan-btn:hover {
+  transform: scale(1.02);
+  box-shadow: 0 8px 24px rgba(16, 163, 127, 0.3);
+}
+
+.setup-scan-btn:active {
+  transform: scale(0.98);
+}
+
+.setup-scan-btn svg {
+  stroke: white;
+}
+
+.setup-secondary {
+  text-align: center;
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-color, #333);
+}
+
+.setup-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-muted, #888);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 8px 16px;
+}
+
+.setup-advanced-toggle:hover {
+  color: var(--text-color, #fff);
+}
+
+.setup-advanced-toggle.expanded svg {
+  transform: rotate(180deg);
+}
+
+.setup-advanced-fields {
+  margin-top: 20px;
+  padding: 20px;
+  background: var(--input-bg, #2a2a2a);
+  border-radius: 12px;
+}
+
+.setup-modal-content {
+  max-width: 400px;
+}
+
+.setup-body {
+  padding: 8px;
 }
 
 .setup-config-status {
@@ -3040,167 +3125,13 @@ body {
   color: var(--text-secondary);
 }
 
-/* Setup Modal - First Time Setup */
-.setup-modal-content {
-  max-width: 400px;
+/* Scanner active state - hide UI so camera can be seen */
+body.scanner-active {
+  background: transparent !important;
 }
 
-.setup-body {
-  text-align: center;
-  padding: 20px;
-}
-
-.setup-intro {
-  text-align: center;
-  margin-bottom: 24px;
-  color: var(--text-secondary, #888);
-  font-size: 15px;
-}
-
-.setup-primary {
-  margin-bottom: 24px;
-}
-
-.setup-scan-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  width: 100%;
-  padding: 24px;
-  background: var(--accent-color, #10a37f);
-  color: white;
-  border: none;
-  border-radius: 12px;
-  font-size: 18px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s, transform 0.1s;
-}
-
-.setup-scan-btn:hover {
-  background: var(--accent-hover, #0d8a6a);
-}
-
-.setup-scan-btn:active {
-  transform: scale(0.98);
-}
-
-.setup-scan-btn svg {
-  opacity: 0.9;
-}
-
-.setup-hint {
-  margin-top: 12px;
-  font-size: 13px;
-  color: var(--text-muted, #666);
-}
-
-.setup-secondary {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-color, #333);
-}
-
-.setup-advanced-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  background: none;
-  border: none;
-  color: var(--text-secondary, #888);
-  font-size: 14px;
-  cursor: pointer;
-  padding: 8px 16px;
-  margin: 0 auto;
-  transition: color 0.2s;
-}
-
-.setup-advanced-toggle:hover {
-  color: var(--text-color, #fff);
-}
-
-.setup-advanced-toggle svg {
-  transition: transform 0.2s;
-}
-
-.setup-advanced-toggle.expanded svg {
-  transform: rotate(180deg);
-}
-
-.setup-advanced-fields {
-  margin-top: 16px;
-  text-align: left;
-}
-
-.setup-advanced-fields .form-group {
-  margin-bottom: 16px;
-}
-
-.setup-advanced-fields .save-btn {
-  width: 100%;
-  margin-top: 8px;
-}
-
-/* Hide setup modal close button - must complete setup */
-#setupModal .close-btn {
-  display: none;
-}
-
-/* Scanner overlay styles */
-.scanner-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.95);
-  z-index: 10000;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-}
-
-.scanner-viewfinder {
-  width: 280px;
-  height: 280px;
-  border: 3px solid var(--accent-color, #10a37f);
-  border-radius: 16px;
-  position: relative;
-}
-
-.scanner-hint {
-  margin-top: 24px;
-  color: white;
-  font-size: 16px;
-}
-
-.scanner-cancel {
-  margin-top: 24px;
-  padding: 12px 32px;
-  background: rgba(255, 255, 255, 0.1);
-  color: white;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 8px;
-  font-size: 16px;
-  cursor: pointer;
-}
-
-.scanner-cancel:hover {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-/* Scanner active - hide app content during QR scan */
 body.scanner-active .app,
 body.scanner-active .modal {
   display: none !important;
 }
 
-body.scanner-active {
-  background: transparent !important;
-}
-
-/* Scanner is handled by native code, so we just need to hide everything */

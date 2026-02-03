@@ -1740,6 +1740,123 @@ window.CLAWGPT_CONFIG = {
     }
   }
   
+  // === Mobile QR Scanning (Capacitor) ===
+  
+  async startQrScan() {
+    // Check if we're in a Capacitor native app
+    if (typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform()) {
+      await this.startNativeQrScan();
+    } else {
+      // Fallback for web - show instructions
+      this.showToast('QR scanning requires the mobile app. Use Manual Setup instead.');
+      const advancedToggle = document.getElementById('advancedSetupToggle');
+      const advancedFields = document.getElementById('advancedSetupFields');
+      if (advancedToggle && advancedFields) {
+        advancedFields.style.display = 'block';
+        advancedToggle.classList.add('expanded');
+      }
+    }
+  }
+  
+  async startNativeQrScan() {
+    try {
+      const { BarcodeScanner } = Capacitor.Plugins;
+      
+      // Check/request camera permission
+      const { camera } = await BarcodeScanner.checkPermissions();
+      if (camera !== 'granted') {
+        const result = await BarcodeScanner.requestPermissions();
+        if (result.camera !== 'granted') {
+          this.showToast('Camera permission is required to scan QR codes');
+          return;
+        }
+      }
+      
+      // Hide the modal and show scanner UI
+      const modal = document.getElementById('setupModal');
+      if (modal) modal.style.opacity = '0';
+      document.body.classList.add('scanner-active');
+      
+      const listener = await BarcodeScanner.addListener('barcodeScanned', async (result) => {
+        const barcode = result.barcode;
+        if (barcode && barcode.rawValue) {
+          await listener.remove();
+          await BarcodeScanner.stopScan();
+          document.body.classList.remove('scanner-active');
+          if (modal) modal.style.opacity = '1';
+          
+          this.handleQrCodeScanned(barcode.rawValue);
+        }
+      });
+      
+      await BarcodeScanner.startScan();
+      
+      // Store cancel function for later use
+      this.cancelQrScan = async () => {
+        await listener.remove();
+        await BarcodeScanner.stopScan();
+        document.body.classList.remove('scanner-active');
+        if (modal) modal.style.opacity = '1';
+      };
+      
+    } catch (error) {
+      console.error('QR scan error:', error);
+      document.body.classList.remove('scanner-active');
+      const modal = document.getElementById('setupModal');
+      if (modal) modal.style.opacity = '1';
+      this.showToast('Failed to start QR scanner: ' + error.message);
+    }
+  }
+  
+  handleQrCodeScanned(data) {
+    console.log('QR scanned raw data:', data);
+    
+    try {
+      // Check if it's a relay URL (web URL with relay params)
+      if (data.includes('relay=') && data.includes('channel=') && data.includes('pubkey=')) {
+        const url = new URL(data);
+        const relayServer = url.searchParams.get('relay');
+        const channelId = url.searchParams.get('channel');
+        const publicKey = url.searchParams.get('pubkey');
+        
+        if (relayServer && channelId && publicKey) {
+          // Close setup modal
+          const modal = document.getElementById('setupModal');
+          if (modal) modal.style.display = 'none';
+          
+          // Join relay as client
+          this.joinRelayAsClient({ server: relayServer, channel: channelId, pubkey: publicKey });
+          return;
+        }
+      }
+      
+      // Try to parse as direct connection URL
+      const url = new URL(data);
+      const gatewayUrl = url.searchParams.get('gateway') || url.searchParams.get('url');
+      const authToken = url.searchParams.get('token') || url.searchParams.get('auth');
+      const sessionKey = url.searchParams.get('session') || 'main';
+      
+      if (gatewayUrl) {
+        this.gatewayUrl = gatewayUrl;
+        this.authToken = authToken || '';
+        this.sessionKey = sessionKey;
+        this.saveSettings();
+        
+        // Close setup modal and connect
+        const modal = document.getElementById('setupModal');
+        if (modal) modal.style.display = 'none';
+        
+        this.showToast('Settings saved! Connecting...');
+        this.autoConnect();
+      } else {
+        this.showToast('Invalid QR code format', true);
+      }
+    } catch (error) {
+      console.error('QR parse error:', error);
+      this.showToast('Could not parse QR code: ' + error.message, true);
+    }
+  }
+  
   showToast(message, isError = false) {
     // Remove existing toast
     const existing = document.querySelector('.toast');
@@ -1882,6 +1999,48 @@ window.CLAWGPT_CONFIG = {
     const showQrBtn = document.getElementById('showQrBtn');
     if (showQrBtn) {
       showQrBtn.addEventListener('click', () => this.showMobileQR());
+    }
+    
+    // QR Scan button (mobile app - scan desktop's QR)
+    const scanQrBtn = document.getElementById('scanQrBtn');
+    if (scanQrBtn) {
+      scanQrBtn.addEventListener('click', () => this.startQrScan());
+    }
+    
+    // Advanced setup toggle (mobile app)
+    const advancedToggle = document.getElementById('advancedSetupToggle');
+    const advancedFields = document.getElementById('advancedSetupFields');
+    if (advancedToggle && advancedFields) {
+      advancedToggle.addEventListener('click', () => {
+        const isExpanded = advancedFields.style.display !== 'none';
+        advancedFields.style.display = isExpanded ? 'none' : 'block';
+        advancedToggle.classList.toggle('expanded', !isExpanded);
+      });
+    }
+    
+    // Setup save button (mobile app manual setup)
+    const setupSaveBtn = document.getElementById('setupSaveBtn');
+    if (setupSaveBtn) {
+      setupSaveBtn.addEventListener('click', () => {
+        const gatewayUrl = document.getElementById('setupGatewayUrl')?.value;
+        const authToken = document.getElementById('setupAuthToken')?.value;
+        const sessionKey = document.getElementById('setupSessionKey')?.value || 'main';
+        
+        if (gatewayUrl) {
+          this.gatewayUrl = gatewayUrl;
+          this.authToken = authToken || '';
+          this.sessionKey = sessionKey;
+          this.saveSettings();
+          
+          const modal = document.getElementById('setupModal');
+          if (modal) modal.style.display = 'none';
+          
+          this.showToast('Settings saved!');
+          this.autoConnect();
+        } else {
+          this.showToast('Please enter a Gateway URL', true);
+        }
+      });
     }
     
     this.elements.menuBtn.addEventListener('click', () => this.toggleSidebar());

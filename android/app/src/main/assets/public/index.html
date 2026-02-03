@@ -410,107 +410,18 @@
     </div>
   </div>
 
-  <!-- Setup Wizard Modal -->
-  <div class="modal" id="setupModal">
-    <div class="modal-content setup-wizard">
-      <div class="modal-header">
-        <h2>👋 Welcome to ClawGPT</h2>
-      </div>
-      <div class="modal-body">
-        <p class="setup-intro">Let's connect to your OpenClaw. Just two quick steps!</p>
-        
-        <!-- Step 1: Get Token -->
-        <div class="setup-step-box">
-          <div class="setup-step-header">
-            <span class="setup-step-number">1</span>
-            <span class="setup-step-title">Get your token</span>
-          </div>
-          <div class="setup-step-content">
-            <div class="ask-openclaw-row">
-              <span class="ask-label">Ask OpenClaw:</span>
-              <code class="ask-phrase" id="askTokenPhrase">What's my gateway token?</code>
-              <button type="button" class="copy-btn" data-copy="What's my gateway token?" title="Copy to clipboard">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-              </button>
-            </div>
-            <div class="token-input-wrapper">
-              <input type="password" id="setupAuthToken" placeholder="Paste your token here">
-              <span class="token-status" id="tokenStatus"></span>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Step 2: Save Config -->
-        <div class="setup-step-box">
-          <div class="setup-step-header">
-            <span class="setup-step-number">2</span>
-            <span class="setup-step-title">Save the config file</span>
-          </div>
-          <div class="setup-step-content">
-            <button class="save-btn setup-save-btn" id="setupSaveConfigBtn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;margin-right:6px;">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-              Download config.js
-            </button>
-            <div class="setup-folder-instructions" id="setupFolderInstructions">
-              <p>Then move it to your ClawGPT folder:</p>
-              <div class="ask-openclaw-row">
-                <span class="ask-label">Ask OpenClaw:</span>
-                <code class="ask-phrase" id="askFolderPhrase">Open my clawgpt folder</code>
-                <button type="button" class="copy-btn" data-copy="Open my clawgpt folder" title="Copy to clipboard">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                  </svg>
-                </button>
-              </div>
-              <p class="setup-folder-hint">Drag the downloaded file into the folder that opens.</p>
-            </div>
-          </div>
-        </div>
-        
-        <!-- Connect -->
-        <div class="setup-step" id="setupStep1">
-          <div class="setup-actions">
-            <button class="save-btn" id="setupConnectBtn">Connect</button>
-          </div>
-          <p class="setup-refresh-hint">Or just refresh this page after saving the file.</p>
-        </div>
-        
-        <!-- Hidden fields for compatibility -->
-        <input type="hidden" id="setupGatewayUrl" value="ws://127.0.0.1:18789">
-        <input type="hidden" id="setupSessionKey" value="main">
-        
-        <!-- Success state -->
-        <div class="setup-step" id="setupStep2" style="display:none;">
-          <div class="setup-success">
-            <div class="setup-success-icon">✓</div>
-            <div class="setup-success-text">Connected!</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Setup Modal (first-time setup) -->
+  <!-- Setup Modal (normie-friendly) -->
   <div class="modal" id="setupModal">
     <div class="modal-content setup-modal-content">
       <div class="modal-header">
-        <h2>Welcome to ClawGPT</h2>
+        <h2>Connect to ClawGPT</h2>
       </div>
       <div class="modal-body setup-body">
-        <p class="setup-intro">Connect to your OpenClaw instance to get started.</p>
         
         <!-- Primary: QR Scan -->
         <div class="setup-primary" id="setupPrimary">
           <button class="setup-scan-btn" id="scanQrBtn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="32" height="32">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="48" height="48">
               <rect x="3" y="3" width="7" height="7"></rect>
               <rect x="14" y="3" width="7" height="7"></rect>
               <rect x="3" y="14" width="7" height="7"></rect>
@@ -521,13 +432,13 @@
             </svg>
             <span>Scan QR Code</span>
           </button>
-          <p class="setup-hint">Open OpenClaw on your computer and scan the connection QR code</p>
+          <p class="setup-hint">Open <strong>ClawGPT</strong> on your computer, go to <strong>Settings</strong>, and scan the QR code shown there.</p>
         </div>
         
         <!-- Secondary: Advanced Setup -->
         <div class="setup-secondary">
           <button class="setup-advanced-toggle" id="advancedSetupToggle">
-            Advanced Setup
+            Manual Setup
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
               <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
@@ -559,12 +470,12 @@
   <!-- Prism.js core + autoloader for syntax highlighting -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+  <!-- Optional: config.js for default settings (gitignored) -->
   <!-- E2E Encryption for Relay -->
   <script src="lib/nacl.min.js"></script>
   <script src="lib/nacl-util.min.js"></script>
   <script src="lib/relay-crypto.js"></script>
   
-  <!-- Optional: config.js for default settings (gitignored) -->
   <script src="config.js" onerror="/* config.js is optional */"></script>
   <script src="app.js"></script>
 </body>

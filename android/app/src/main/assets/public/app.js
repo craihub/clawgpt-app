@@ -438,6 +438,13 @@ class ClawGPT {
     // Sync existing chats to clawgpt-memory (background)
     this.syncMemoryStorage();
     
+    // Check if joining relay as client (phone scanned QR)
+    if (this.pendingRelayJoin) {
+      this.joinRelayAsClient(this.pendingRelayJoin);
+      delete this.pendingRelayJoin;
+      return; // Don't auto-connect to gateway - we'll get connection through relay
+    }
+    
     // Check if we need to show setup wizard
     if (!this.hasConfigFile && !this.authToken) {
       // Try connecting without auth first - many local setups don't require it
@@ -542,11 +549,6 @@ class ClawGPT {
       this.smartSearch = settings.smartSearch !== false;
       this.semanticSearch = settings.semanticSearch || false;
       this.showTokens = settings.showTokens !== false;
-      
-      // Relay settings
-      this.relayMode = settings.relayMode || false;
-      this.relayServer = settings.relayServer || '';
-      this.relayChannelId = settings.relayChannelId || '';
     } else {
       // No saved settings - use config.js values or defaults
       this.gatewayUrl = config.gatewayUrl || 'ws://127.0.0.1:18789';
@@ -556,9 +558,6 @@ class ClawGPT {
       this.smartSearch = true;
       this.semanticSearch = false;
       this.showTokens = true;
-      this.relayMode = false;
-      this.relayServer = '';
-      this.relayChannelId = '';
     }
     
     // Log if using config.js
@@ -569,14 +568,40 @@ class ClawGPT {
     // Token tracking
     this.tokenCount = parseInt(localStorage.getItem('clawgpt-tokens') || '0');
     
-    // Check URL params for token (allows one-time setup links)
+    // Check URL params for token and gateway (allows one-time setup links, especially from mobile QR)
     const urlParams = new URLSearchParams(window.location.search);
     const urlToken = urlParams.get('token');
+    const urlGateway = urlParams.get('gateway');
+    
+    let urlChanged = false;
+    
     if (urlToken && !this.hasConfigFile) {
       this.authToken = urlToken;
+      urlChanged = true;
+    }
+    
+    if (urlGateway && !this.hasConfigFile) {
+      this.gatewayUrl = urlGateway;
+      urlChanged = true;
+    }
+    
+    if (urlChanged) {
       this.saveSettings();
+      // Clean up URL to remove sensitive params
       const cleanUrl = window.location.pathname;
       window.history.replaceState({}, document.title, cleanUrl);
+    }
+    
+    // Check for relay connection params (phone joining via QR code)
+    const relayServer = urlParams.get('relay');
+    const relayChannel = urlParams.get('channel');
+    const relayPubkey = urlParams.get('pubkey');
+    
+    if (relayServer && relayChannel && relayPubkey) {
+      // Store for later connection after init completes
+      this.pendingRelayJoin = { server: relayServer, channel: relayChannel, pubkey: relayPubkey };
+      // Clean URL
+      window.history.replaceState({}, document.title, window.location.pathname);
     }
   }
 
@@ -643,29 +668,6 @@ class ClawGPT {
     const doneBtn = document.getElementById('setupDoneBtn');
     const openControlBtn = document.getElementById('openControlUiBtn');
     const getTokenBtn = document.getElementById('getTokenBtn');
-    const scanQrBtn = document.getElementById('scanQrBtn');
-    const advancedToggle = document.getElementById('advancedSetupToggle');
-    const advancedFields = document.getElementById('advancedSetupFields');
-    const setupSaveBtn = document.getElementById('setupSaveBtn');
-    
-    // QR scan button (primary action for mobile)
-    if (scanQrBtn) {
-      scanQrBtn.addEventListener('click', () => this.startQrScan());
-    }
-    
-    // Advanced setup toggle
-    if (advancedToggle && advancedFields) {
-      advancedToggle.addEventListener('click', () => {
-        const isExpanded = advancedFields.style.display !== 'none';
-        advancedFields.style.display = isExpanded ? 'none' : 'block';
-        advancedToggle.classList.toggle('expanded', !isExpanded);
-      });
-    }
-    
-    // Manual connect button (in advanced fields)
-    if (setupSaveBtn) {
-      setupSaveBtn.addEventListener('click', () => this.handleSetupFromAdvanced());
-    }
     
     if (saveBtn) {
       saveBtn.addEventListener('click', () => this.handleSetupSave());
@@ -735,391 +737,6 @@ class ClawGPT {
     
     // Show helper toast
     this.showToast('Look for gateway → auth → token in the config');
-  }
-  
-  // QR Code Scanning for mobile setup
-  async startQrScan() {
-    // Check if we're in a Capacitor native app
-    if (typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform()) {
-      await this.startNativeQrScan();
-    } else {
-      // Fallback for web - show instructions
-      this.showToast('QR scanning requires the mobile app. Use Manual Setup instead.');
-      const advancedToggle = document.getElementById('advancedSetupToggle');
-      const advancedFields = document.getElementById('advancedSetupFields');
-      if (advancedToggle && advancedFields) {
-        advancedFields.style.display = 'block';
-        advancedToggle.classList.add('expanded');
-      }
-    }
-  }
-  
-  async startNativeQrScan() {
-    try {
-      // Get the barcode scanner from Capacitor plugins
-      const { BarcodeScanner } = Capacitor.Plugins;
-      
-      // Check/request camera permission
-      const { camera } = await BarcodeScanner.checkPermissions();
-      if (camera !== 'granted') {
-        const result = await BarcodeScanner.requestPermissions();
-        if (result.camera !== 'granted') {
-          this.showToast('Camera permission is required to scan QR codes');
-          return;
-        }
-      }
-      
-      // Hide the modal and show scanner UI
-      const modal = document.getElementById('setupModal');
-      if (modal) modal.style.opacity = '0';
-      document.body.classList.add('scanner-active');
-      
-      const listener = await BarcodeScanner.addListener('barcodeScanned', async (result) => {
-        const barcode = result.barcode;
-        if (barcode && barcode.rawValue) {
-          await listener.remove();
-          await BarcodeScanner.stopScan();
-          document.body.classList.remove('scanner-active');
-          if (modal) modal.style.opacity = '1';
-          
-          this.handleQrCodeScanned(barcode.rawValue);
-        }
-      });
-      
-      await BarcodeScanner.startScan();
-      
-      // Store cancel function for later use
-      this.cancelQrScan = async () => {
-        await listener.remove();
-        await BarcodeScanner.stopScan();
-        document.body.classList.remove('scanner-active');
-        if (modal) modal.style.opacity = '1';
-      };
-      
-    } catch (error) {
-      console.error('QR scan error:', error);
-      document.body.classList.remove('scanner-active');
-      const modal = document.getElementById('setupModal');
-      if (modal) modal.style.opacity = '1';
-      this.showToast('Failed to start QR scanner: ' + error.message);
-    }
-  }
-  
-  handleQrCodeScanned(data) {
-    console.log('QR scanned raw data:', data);
-    
-    try {
-      // Check if it's a relay URL (clawgpt://relay?...)
-      if (data.startsWith('clawgpt://relay')) {
-        this.handleRelayQR(data);
-        return;
-      }
-      
-      // Try to parse as JSON first (new format)
-      let config;
-      try {
-        config = JSON.parse(data);
-        console.log('Parsed as JSON:', config);
-      } catch {
-        // Try to parse as URL with query params (local network format)
-        console.log('Not JSON, trying URL parse...');
-        const url = new URL(data);
-        config = {
-          gatewayUrl: url.searchParams.get('gateway') || url.searchParams.get('url'),
-          authToken: url.searchParams.get('token') || url.searchParams.get('auth'),
-          sessionKey: url.searchParams.get('session') || 'main'
-        };
-      }
-      
-      console.log('Final config:', config);
-      
-      if (config.gatewayUrl || config.gateway) {
-        const gatewayUrl = config.gatewayUrl || config.gateway;
-        const authToken = config.authToken || config.token || '';
-        const sessionKey = config.sessionKey || config.session || 'main';
-        
-        // Save settings
-        this.gatewayUrl = gatewayUrl;
-        this.authToken = authToken;
-        this.sessionKey = sessionKey;
-        this.relayMode = false;
-        
-        // Force save connection settings
-        const settings = JSON.parse(localStorage.getItem('clawgpt-settings') || '{}');
-        settings.gatewayUrl = gatewayUrl;
-        settings.authToken = authToken;
-        settings.sessionKey = sessionKey;
-        settings.relayMode = false;
-        localStorage.setItem('clawgpt-settings', JSON.stringify(settings));
-        
-        // Close setup modal
-        const modal = document.getElementById('setupModal');
-        if (modal) modal.classList.remove('open');
-        
-        this.showToast('Connecting...');
-        this.autoConnect();
-      } else {
-        this.showToast('Invalid QR code - missing gateway URL');
-      }
-    } catch (error) {
-      console.error('QR parse error:', error);
-      this.showToast('Could not parse QR code data');
-    }
-  }
-  
-  handleRelayQR(data) {
-    try {
-      // Parse relay URL: clawgpt://relay?server=...&channel=...&pubkey=...
-      const url = new URL(data);
-      const relayServer = url.searchParams.get('server');
-      const channelId = url.searchParams.get('channel');
-      const desktopPublicKey = url.searchParams.get('pubkey') || '';
-      
-      // Legacy support: check for token param (old non-encrypted flow)
-      const legacyToken = url.searchParams.get('token');
-      
-      if (!relayServer || !channelId) {
-        this.showToast('Invalid relay QR code');
-        return;
-      }
-      
-      console.log('Relay config:', { relayServer, channelId, hasPublicKey: !!desktopPublicKey });
-      
-      // Save relay settings
-      this.relayServer = relayServer;
-      this.relayChannelId = channelId;
-      this.desktopPublicKey = desktopPublicKey;
-      this.sessionKey = 'main';
-      this.relayMode = true;
-      
-      // Legacy: if we got a token directly (old QR format), use it
-      if (legacyToken && !desktopPublicKey) {
-        this.authToken = legacyToken;
-        console.warn('Using legacy unencrypted relay mode');
-      }
-      
-      // Save to localStorage (don't save pubkey - it's session-specific)
-      const settings = JSON.parse(localStorage.getItem('clawgpt-settings') || '{}');
-      settings.relayServer = relayServer;
-      settings.relayChannelId = channelId;
-      settings.relayMode = true;
-      localStorage.setItem('clawgpt-settings', JSON.stringify(settings));
-      
-      // Close setup modal
-      const modal = document.getElementById('setupModal');
-      if (modal) modal.classList.remove('open');
-      
-      this.showToast('Connecting via relay...');
-      this.connectToRelay();
-    } catch (error) {
-      console.error('Relay QR parse error:', error);
-      this.showToast('Could not parse relay QR code');
-    }
-  }
-  
-  connectToRelay() {
-    const wsUrl = this.relayServer.replace(/^http/, 'ws') + '/channel/' + this.relayChannelId;
-    console.log('Connecting to relay:', wsUrl);
-    
-    this.setStatus('Connecting to relay...');
-    
-    // Initialize E2E encryption if we have desktop's public key
-    if (this.desktopPublicKey && typeof RelayCrypto !== 'undefined') {
-      this.relayCrypto = new RelayCrypto();
-      this.relayEncrypted = false;
-    }
-    
-    try {
-      if (this.ws) {
-        this.ws.close();
-      }
-      
-      this.ws = new WebSocket(wsUrl);
-      
-      this.ws.onopen = () => {
-        console.log('Relay WebSocket connected');
-      };
-      
-      this.ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        
-        // Handle relay-specific messages
-        if (msg.type === 'relay') {
-          if (msg.event === 'channel.joined') {
-            console.log('Joined relay channel:', msg);
-            if (msg.hostConnected) {
-              // Start key exchange if we have E2E crypto
-              if (this.relayCrypto && this.desktopPublicKey) {
-                this.initiateKeyExchange();
-              } else {
-                // Legacy mode - connected without encryption
-                this.connected = true;
-                this.setStatus('Connected', true);
-                this.showToast('Connected to your computer!');
-                this.onInputChange();
-              }
-            } else {
-              this.setStatus('Waiting for computer...');
-              this.showToast('Waiting for your computer to connect...');
-            }
-          } else if (msg.event === 'host.connected') {
-            // Desktop just connected - start key exchange
-            if (this.relayCrypto && this.desktopPublicKey && !this.relayEncrypted) {
-              this.initiateKeyExchange();
-            } else {
-              this.connected = true;
-              this.setStatus('Connected', true);
-              this.showToast('Computer connected!');
-            }
-          } else if (msg.event === 'host.disconnected') {
-            this.setStatus('Computer disconnected');
-            this.showToast('Your computer disconnected');
-            this.relayEncrypted = false;
-          } else if (msg.event === 'error') {
-            this.showToast('Relay error: ' + msg.error);
-            this.setStatus('Error');
-          }
-          return;
-        }
-        
-        // Handle encrypted messages
-        if (msg.type === 'encrypted' && this.relayEncrypted && this.relayCrypto) {
-          const decrypted = this.relayCrypto.openEnvelope(msg);
-          if (decrypted) {
-            this.handleDecryptedRelayMessage(decrypted);
-          } else {
-            console.error('Failed to decrypt relay message');
-          }
-          return;
-        }
-        
-        // Handle regular gateway messages
-        this.handleMessage(msg);
-      };
-      
-      this.ws.onerror = (error) => {
-        console.error('Relay WebSocket error:', error);
-        this.setStatus('Relay error');
-      };
-      
-      this.ws.onclose = () => {
-        console.log('Relay WebSocket closed');
-        this.connected = false;
-        this.relayEncrypted = false;
-        this.setStatus('Disconnected');
-        if (this.relayCrypto) {
-          this.relayCrypto.destroy();
-          this.relayCrypto = null;
-        }
-      };
-      
-    } catch (error) {
-      console.error('Relay connection error:', error);
-      this.setStatus('Error');
-      this.showToast('Failed to connect to relay');
-    }
-  }
-  
-  initiateKeyExchange() {
-    if (!this.relayCrypto || !this.desktopPublicKey) {
-      console.error('Cannot initiate key exchange - missing crypto or desktop public key');
-      return;
-    }
-    
-    console.log('Initiating E2E key exchange...');
-    this.setStatus('Establishing secure connection...');
-    
-    // Set the desktop's public key and derive shared secret
-    if (!this.relayCrypto.setPeerPublicKey(this.desktopPublicKey)) {
-      console.error('Failed to set desktop public key');
-      this.showToast('Secure connection failed', true);
-      return;
-    }
-    
-    // Send our public key to the desktop
-    const ourPublicKey = this.relayCrypto.getPublicKey();
-    this.ws.send(JSON.stringify({
-      type: 'keyexchange',
-      publicKey: ourPublicKey
-    }));
-    
-    // Encryption is now ready
-    this.relayEncrypted = true;
-    
-    // Get and display verification emoji
-    const emoji = this.relayCrypto.getVerificationEmoji();
-    console.log('E2E encryption established! Verification:', emoji);
-    
-    this.setStatus("Connected", true);
-    this.showToast(`Secure connection! Verify: ${emoji}`);
-    this.connected = true;
-    this.onInputChange();
-  }
-  
-  handleDecryptedRelayMessage(msg) {
-    // Handle auth message from desktop (contains the actual auth token)
-    if (msg.type === 'auth') {
-      console.log('Received encrypted auth from desktop');
-      this.authToken = msg.token;
-      this.gatewayUrl = msg.gatewayUrl;
-      // Auth is now set, we're fully connected
-      return;
-    }
-    
-    // Handle all other messages as gateway messages
-    this.handleMessage(msg);
-  }
-  
-  sendRelayMessage(msg) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.error('Relay not connected');
-      return;
-    }
-    
-    if (this.relayEncrypted && this.relayCrypto) {
-      // Send encrypted
-      const envelope = this.relayCrypto.createEnvelope(msg);
-      this.ws.send(JSON.stringify(envelope));
-    } else {
-      // Send unencrypted (only for legacy mode)
-      this.ws.send(JSON.stringify(msg));
-    }
-  }
-  
-  sendConnectViaRelay() {
-    // Send the same connect message as normal, but through the relay
-    const nonce = null; // Relay doesn't use challenge-response yet
-    this.sendConnect(nonce);
-  }
-  
-  handleSetupFromAdvanced() {
-    const gatewayUrl = document.getElementById('setupGatewayUrl')?.value?.trim();
-    const authToken = document.getElementById('setupAuthToken')?.value?.trim();
-    const sessionKey = document.getElementById('setupSessionKey')?.value?.trim() || 'main';
-    
-    if (!gatewayUrl) {
-      this.showToast('Please enter a Gateway URL');
-      return;
-    }
-    
-    // Save settings
-    this.gatewayUrl = gatewayUrl;
-    this.authToken = authToken;
-    this.sessionKey = sessionKey;
-    
-    // Force save connection settings
-    const settings = JSON.parse(localStorage.getItem('clawgpt-settings') || '{}');
-    settings.gatewayUrl = gatewayUrl;
-    settings.authToken = authToken;
-    settings.sessionKey = sessionKey;
-    localStorage.setItem('clawgpt-settings', JSON.stringify(settings));
-    
-    // Close setup modal
-    const modal = document.getElementById('setupModal');
-    if (modal) modal.classList.remove('open');
-    
-    this.showToast('Connecting to ' + gatewayUrl);
-    this.autoConnect();
   }
   
   async checkGatewayConnection() {
@@ -1396,11 +1013,16 @@ window.CLAWGPT_CONFIG = {
     this.chats = await this.storage.loadAll();
   }
 
-  saveChats() {
+  saveChats(broadcastChatId = null) {
     // Fire and forget - don't await to keep UI responsive
     this.storage.saveAll(this.chats).catch(err => {
       console.error('Failed to save chats:', err);
     });
+    
+    // Broadcast to connected peer if relay is active
+    if (broadcastChatId && this.relayEncrypted) {
+      this.broadcastChatUpdate(broadcastChatId);
+    }
   }
   
   // Export all chats to a JSON file
@@ -1469,34 +1091,635 @@ window.CLAWGPT_CONFIG = {
     const qrContainer = document.getElementById('qrCode');
     const placeholder = document.getElementById('qrPlaceholder');
     const urlDisplay = document.getElementById('mobileUrl');
+    const relayToggle = document.getElementById('relayModeToggle');
     
     if (!qrContainer) return;
     
-    // Build the URL with token
+    // Check if relay mode is enabled
+    const useRelay = relayToggle?.checked || false;
+    
+    if (useRelay) {
+      this.showRelayQR(qrContainer, placeholder, urlDisplay);
+    } else {
+      this.showLocalQR(qrContainer, placeholder, urlDisplay);
+    }
+  }
+  
+  showLocalQR(qrContainer, placeholder, urlDisplay) {
+    // Build the web UI URL
     const protocol = window.location.protocol;
     const host = window.location.hostname;
     const port = window.location.port;
+    let webUrl = `${protocol}//${host}${port ? ':' + port : ''}`;
     
-    // If localhost, try to get LAN IP (will need to be set manually or use a fallback)
-    let mobileUrl;
-    if (host === 'localhost' || host === '127.0.0.1') {
-      // Show instructions to find LAN IP
-      mobileUrl = `${protocol}//${host}${port ? ':' + port : ''}`;
-      if (urlDisplay) {
-        urlDisplay.innerHTML = `<strong>Current URL:</strong> ${mobileUrl}<br><small>For mobile access, use your computer's local IP instead of localhost</small>`;
-      }
-    } else {
-      mobileUrl = `${protocol}//${host}${port ? ':' + port : ''}`;
-      if (urlDisplay) {
-        urlDisplay.textContent = mobileUrl;
-      }
+    // Build the gateway URL for mobile
+    let gatewayUrl = this.gatewayUrl || 'ws://127.0.0.1:18789';
+    
+    // If gateway is localhost, replace with the web host (for same-network access)
+    if (gatewayUrl.includes('localhost') || gatewayUrl.includes('127.0.0.1')) {
+      // Extract the port from gateway URL
+      const gatewayPort = gatewayUrl.match(/:(\d+)$/)?.[1] || '18789';
+      gatewayUrl = `ws://${host}:${gatewayPort}`;
     }
     
-    // Add token to URL if we have one
+    // Build mobile URL with both gateway and token
+    let mobileUrl = `${webUrl}?gateway=${encodeURIComponent(gatewayUrl)}`;
     if (this.authToken) {
-      mobileUrl += `?token=${encodeURIComponent(this.authToken)}`;
+      mobileUrl += `&token=${encodeURIComponent(this.authToken)}`;
     }
     
+    // Update display
+    if (urlDisplay) {
+      urlDisplay.innerHTML = `<strong>Mode:</strong> Local Network<br><strong>Gateway:</strong> ${gatewayUrl}`;
+    }
+    
+    this.renderQRCode(qrContainer, placeholder, mobileUrl);
+  }
+  
+  async showRelayQR(qrContainer, placeholder, urlDisplay) {
+    // Show loading state
+    if (urlDisplay) {
+      urlDisplay.innerHTML = '<strong>Mode:</strong> Remote Relay<br><em>Connecting to relay...</em>';
+    }
+    qrContainer.innerHTML = '<p style="color: var(--text-muted);">Connecting to relay...</p>';
+    if (placeholder) placeholder.style.display = 'none';
+    qrContainer.style.display = 'block';
+    
+    try {
+      // Initialize E2E encryption
+      this.relayCrypto = new RelayCrypto();
+      const publicKey = this.relayCrypto.getPublicKey();
+      
+      // Connect to relay and get channel ID
+      const relayUrl = this.relayServerUrl || 'wss://clawgpt-relay.fly.dev';
+      const channelId = await this.connectToRelay(relayUrl);
+      
+      // Build mobile URL with relay info + our public key (NOT the auth token!)
+      // The auth token will be sent encrypted after key exchange
+      // Use web URL so it works in both browser and native app (app can intercept via intent filter)
+      const webBase = window.location.origin + window.location.pathname;
+      const mobileUrl = `${webBase}?relay=${encodeURIComponent(relayUrl)}&channel=${channelId}&pubkey=${encodeURIComponent(publicKey)}`;
+      
+      // Update display - show waiting for phone
+      if (urlDisplay) {
+        urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay (E2E Encrypted)<br><strong>Channel:</strong> ${channelId}<br><em>Waiting for phone to connect...</em>`;
+      }
+      
+      this.renderQRCode(qrContainer, placeholder, mobileUrl);
+      
+    } catch (error) {
+      console.error('Relay connection failed:', error);
+      if (urlDisplay) {
+        urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay<br><span style="color: #e74c3c;">Failed: ${error.message}</span>`;
+      }
+      qrContainer.innerHTML = '<p style="color: #e74c3c;">Relay connection failed</p>';
+    }
+  }
+  
+  connectToRelay(relayUrl) {
+    return new Promise((resolve, reject) => {
+      // Close existing relay connection
+      if (this.relayWs) {
+        this.relayWs.close();
+      }
+      
+      // Reset encryption state
+      this.relayEncrypted = false;
+      
+      const wsUrl = relayUrl.replace(/^http/, 'ws') + '/new';
+      console.log('Connecting to relay:', wsUrl);
+      
+      this.relayWs = new WebSocket(wsUrl);
+      
+      this.relayWs.onopen = () => {
+        console.log('Relay connected, waiting for channel ID...');
+      };
+      
+      this.relayWs.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          
+          // Handle relay control messages
+          if (msg.type === 'relay') {
+            if (msg.event === 'channel.created') {
+              console.log('Relay channel created:', msg.channelId);
+              this.relayChannelId = msg.channelId;
+              resolve(msg.channelId);
+            } else if (msg.event === 'client.connected') {
+              console.log('Mobile client connected via relay, waiting for key exchange...');
+            }
+            return;
+          }
+          
+          // Handle key exchange from phone
+          if (msg.type === 'keyexchange' && msg.publicKey) {
+            this.handleRelayKeyExchange(msg.publicKey);
+            return;
+          }
+          
+          // Handle encrypted messages
+          if (msg.type === 'encrypted' && this.relayEncrypted) {
+            const decrypted = this.relayCrypto.openEnvelope(msg);
+            if (decrypted) {
+              this.handleRelayMessage(decrypted);
+            } else {
+              console.error('Failed to decrypt relay message');
+            }
+            return;
+          }
+          
+          // Fallback for unencrypted messages (shouldn't happen after key exchange)
+          if (!this.relayEncrypted) {
+            console.warn('Received unencrypted message before key exchange');
+          }
+          
+        } catch (e) {
+          console.error('Relay message parse error:', e);
+        }
+      };
+      
+      this.relayWs.onerror = (error) => {
+        console.error('Relay WebSocket error:', error);
+        reject(new Error('Connection failed'));
+      };
+      
+      this.relayWs.onclose = () => {
+        console.log('Relay connection closed');
+        this.relayWs = null;
+        this.relayEncrypted = false;
+        if (this.relayCrypto) {
+          this.relayCrypto.destroy();
+          this.relayCrypto = null;
+        }
+      };
+      
+      // Timeout
+      setTimeout(() => {
+        if (!this.relayChannelId) {
+          this.relayWs?.close();
+          reject(new Error('Timeout'));
+        }
+      }, 10000);
+    });
+  }
+  
+  // Join relay as client (phone side - scanned QR code)
+  async joinRelayAsClient({ server, channel, pubkey }) {
+    console.log('Joining relay as client:', { server, channel });
+    
+    this.updateStatus('Connecting to relay...');
+    
+    // Initialize crypto
+    if (typeof RelayCrypto === 'undefined') {
+      this.showToast('Relay crypto not available', true);
+      return;
+    }
+    
+    this.relayCrypto = new RelayCrypto();
+    this.relayCrypto.generateKeyPair();
+    
+    // Set host's public key and derive shared secret immediately
+    if (!this.relayCrypto.setPeerPublicKey(pubkey)) {
+      this.showToast('Invalid host public key', true);
+      return;
+    }
+    
+    // Connect to relay channel
+    const wsUrl = server.replace('https://', 'wss://').replace('http://', 'ws://');
+    const channelUrl = `${wsUrl}/channel/${channel}`;
+    
+    try {
+      this.relayWs = new WebSocket(channelUrl);
+    } catch (e) {
+      this.showToast('Failed to connect to relay', true);
+      return;
+    }
+    
+    this.relayWs.onopen = () => {
+      console.log('Connected to relay channel as client');
+      
+      // Send our public key to complete key exchange
+      this.relayWs.send(JSON.stringify({
+        type: 'keyexchange',
+        publicKey: this.relayCrypto.getPublicKey()
+      }));
+      
+      // Mark as encrypted (we already derived shared secret from host's pubkey in QR)
+      this.relayEncrypted = true;
+      
+      // Show verification code
+      const verifyCode = this.relayCrypto.getVerificationCode();
+      console.log('E2E encryption established! Verification:', verifyCode);
+      
+      this.updateStatus('Secure relay connected');
+      this.showToast(`Secure connection! Verify: ${verifyCode}`, 5000);
+      
+      // Display verification in UI
+      this.showRelayClientStatus(verifyCode);
+      
+      // Send our chat metadata to sync
+      this.sendChatSyncMeta();
+    };
+    
+    this.relayWs.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        
+        // Handle relay control messages
+        if (msg.type === 'relay') {
+          if (msg.event === 'channel.joined') {
+            console.log('Joined relay channel:', msg);
+          } else if (msg.event === 'host.disconnected') {
+            this.showToast('Desktop disconnected', true);
+            this.updateStatus('Host disconnected');
+          } else if (msg.event === 'error') {
+            this.showToast(msg.error || 'Relay error', true);
+          }
+          return;
+        }
+        
+        // Handle encrypted messages
+        if (msg.type === 'encrypted' && this.relayEncrypted) {
+          const decrypted = this.relayCrypto.openEnvelope(msg);
+          if (decrypted) {
+            this.handleRelayClientMessage(decrypted);
+          } else {
+            console.error('Failed to decrypt relay message');
+          }
+          return;
+        }
+      } catch (e) {
+        console.error('Relay message parse error:', e);
+      }
+    };
+    
+    this.relayWs.onerror = (error) => {
+      console.error('Relay error:', error);
+      this.showToast('Relay connection error', true);
+    };
+    
+    this.relayWs.onclose = () => {
+      console.log('Relay connection closed');
+      this.relayWs = null;
+      this.relayEncrypted = false;
+      this.updateStatus('Relay disconnected');
+      if (this.relayCrypto) {
+        this.relayCrypto.destroy();
+        this.relayCrypto = null;
+      }
+    };
+  }
+  
+  // Handle messages received as relay client (phone side)
+  handleRelayClientMessage(msg) {
+    // Handle sync messages (same as host)
+    if (msg.type === 'sync-meta') {
+      this.handleSyncMeta(msg);
+      return;
+    }
+    if (msg.type === 'sync-request') {
+      this.handleSyncRequest(msg);
+      return;
+    }
+    if (msg.type === 'sync-data') {
+      this.handleSyncData(msg);
+      return;
+    }
+    if (msg.type === 'chat-update') {
+      this.handleChatUpdate(msg);
+      return;
+    }
+    
+    // Handle auth info from desktop (gateway URL + token)
+    if (msg.type === 'auth') {
+      console.log('Received gateway auth from desktop');
+      this.gatewayUrl = msg.gatewayUrl;
+      this.authToken = msg.token;
+      this.saveSettings();
+      
+      // Now connect to gateway through the desktop (relay forwards our messages)
+      this.connectViaRelay();
+      return;
+    }
+    
+    // Handle gateway responses forwarded from desktop
+    if (msg.type === 'gateway-response') {
+      // Reuse the normal gateway message handler
+      this.handleMessage(msg.data);
+      return;
+    }
+  }
+  
+  // Connect to gateway through relay (phone side)
+  connectViaRelay() {
+    console.log('Connecting to gateway via relay proxy...');
+    this.updateStatus('Connecting...');
+    
+    // The phone sends messages to relay, desktop forwards to gateway
+    // We'll use the relay as our "WebSocket" to gateway
+    this.connected = true;
+    this.relayIsGatewayProxy = true;
+    
+    // Authenticate with gateway (desktop will forward this)
+    this.sendViaRelay({
+      type: 'req',
+      id: this.generateId(),
+      method: 'connect',
+      params: {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: { id: 'clawgpt-mobile', version: '0.1.0' },
+        role: 'operator',
+        scopes: [],
+        auth: { token: this.authToken }
+      }
+    });
+  }
+  
+  // Send message to gateway via relay (phone side)
+  sendViaRelay(gatewayMsg) {
+    if (!this.relayEncrypted || !this.relayWs) {
+      console.error('Relay not connected');
+      return;
+    }
+    
+    this.sendRelayMessage({
+      type: 'gateway-request',
+      data: gatewayMsg
+    });
+  }
+  
+  // Show relay client status in UI
+  showRelayClientStatus(verifyCode) {
+    // Update status area or show a banner
+    const statusEl = document.getElementById('status');
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color: var(--accent-color);">Secure</span> <code style="font-size: 0.8em;">${verifyCode}</code>`;
+      statusEl.title = 'Connected via encrypted relay. Verify this code matches your desktop.';
+    }
+  }
+  
+  handleRelayKeyExchange(peerPublicKey) {
+    console.log('Received public key from phone, completing key exchange...');
+    
+    if (!this.relayCrypto) {
+      console.error('RelayCrypto not initialized');
+      return;
+    }
+    
+    // Set peer's public key and derive shared secret
+    if (!this.relayCrypto.setPeerPublicKey(peerPublicKey)) {
+      console.error('Failed to set peer public key');
+      this.showToast('Secure connection failed', true);
+      return;
+    }
+    
+    this.relayEncrypted = true;
+    
+    // Get verification code (words)
+    const verifyCode = this.relayCrypto.getVerificationCode();
+    console.log('E2E encryption established! Verification:', verifyCode);
+    
+    // Update the UI to show connected + verification code
+    const urlDisplay = document.getElementById('mobileUrl');
+    if (urlDisplay) {
+      urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay (E2E Encrypted)<br><strong>Verify:</strong> <code style="font-size: 0.95em; background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${verifyCode}</code><br><span style="color: var(--accent-color);">Match these words on your phone</span>`;
+    }
+    
+    this.showToast(`Secure! Verify: ${verifyCode}`, 5000);
+    
+    // Now send the auth token encrypted
+    this.sendRelayMessage({
+      type: 'auth',
+      token: this.authToken,
+      gatewayUrl: this.gatewayUrl
+    });
+    
+    // Start chat history sync
+    this.sendChatSyncMeta();
+  }
+  
+  // === Chat History Sync ===
+  
+  sendChatSyncMeta() {
+    // Send metadata about our chats so the other side can request what it needs
+    const meta = {};
+    for (const [id, chat] of Object.entries(this.chats)) {
+      meta[id] = {
+        updatedAt: chat.updatedAt || chat.createdAt || 0,
+        messageCount: chat.messages?.length || 0
+      };
+    }
+    
+    this.sendRelayMessage({
+      type: 'sync-meta',
+      chats: meta,
+      deviceId: this.getDeviceId()
+    });
+    
+    console.log(`[Sync] Sent metadata for ${Object.keys(meta).length} chats`);
+  }
+  
+  getDeviceId() {
+    // Simple device identifier to prevent echo
+    if (!this._deviceId) {
+      this._deviceId = localStorage.getItem('clawgpt-device-id');
+      if (!this._deviceId) {
+        this._deviceId = 'dev-' + Math.random().toString(36).substring(2, 10);
+        localStorage.setItem('clawgpt-device-id', this._deviceId);
+      }
+    }
+    return this._deviceId;
+  }
+  
+  handleSyncMeta(msg) {
+    // Compare their metadata with ours and request chats we need
+    const theirMeta = msg.chats || {};
+    const theirDeviceId = msg.deviceId;
+    
+    // Don't process our own messages
+    if (theirDeviceId === this.getDeviceId()) return;
+    
+    const needChats = [];
+    
+    for (const [id, theirInfo] of Object.entries(theirMeta)) {
+      const ourChat = this.chats[id];
+      const ourUpdatedAt = ourChat?.updatedAt || ourChat?.createdAt || 0;
+      
+      // Request if we don't have it or theirs is newer
+      if (!ourChat || theirInfo.updatedAt > ourUpdatedAt) {
+        needChats.push(id);
+      }
+    }
+    
+    if (needChats.length > 0) {
+      console.log(`[Sync] Requesting ${needChats.length} chats from peer`);
+      this.sendRelayMessage({
+        type: 'sync-request',
+        chatIds: needChats,
+        deviceId: this.getDeviceId()
+      });
+    } else {
+      console.log('[Sync] Already up to date');
+    }
+  }
+  
+  handleSyncRequest(msg) {
+    const requestedIds = msg.chatIds || [];
+    const theirDeviceId = msg.deviceId;
+    
+    if (theirDeviceId === this.getDeviceId()) return;
+    
+    // Send the requested chats
+    const chatsToSend = {};
+    for (const id of requestedIds) {
+      if (this.chats[id]) {
+        chatsToSend[id] = this.chats[id];
+      }
+    }
+    
+    if (Object.keys(chatsToSend).length > 0) {
+      console.log(`[Sync] Sending ${Object.keys(chatsToSend).length} chats to peer`);
+      this.sendRelayMessage({
+        type: 'sync-data',
+        chats: chatsToSend,
+        deviceId: this.getDeviceId()
+      });
+    }
+  }
+  
+  handleSyncData(msg) {
+    const incomingChats = msg.chats || {};
+    const theirDeviceId = msg.deviceId;
+    
+    if (theirDeviceId === this.getDeviceId()) return;
+    
+    let merged = 0;
+    for (const [id, chat] of Object.entries(incomingChats)) {
+      const ourChat = this.chats[id];
+      const ourUpdatedAt = ourChat?.updatedAt || ourChat?.createdAt || 0;
+      const theirUpdatedAt = chat.updatedAt || chat.createdAt || 0;
+      
+      // Only merge if theirs is newer or we don't have it
+      if (!ourChat || theirUpdatedAt > ourUpdatedAt) {
+        this.chats[id] = chat;
+        merged++;
+      }
+    }
+    
+    if (merged > 0) {
+      console.log(`[Sync] Merged ${merged} chats from peer`);
+      this.saveChats();
+      this.renderChatList();
+      
+      // Refresh current chat if it was updated
+      if (this.currentChatId && incomingChats[this.currentChatId]) {
+        this.renderMessages();
+      }
+      
+      this.showToast(`Synced ${merged} chat${merged > 1 ? 's' : ''} from other device`);
+    }
+  }
+  
+  handleChatUpdate(msg) {
+    const chat = msg.chat;
+    const theirDeviceId = msg.deviceId;
+    
+    if (theirDeviceId === this.getDeviceId()) return;
+    if (!chat || !chat.id) return;
+    
+    const ourChat = this.chats[chat.id];
+    const ourUpdatedAt = ourChat?.updatedAt || ourChat?.createdAt || 0;
+    const theirUpdatedAt = chat.updatedAt || chat.createdAt || 0;
+    
+    if (!ourChat || theirUpdatedAt > ourUpdatedAt) {
+      this.chats[chat.id] = chat;
+      this.saveChats();
+      this.renderChatList();
+      
+      if (this.currentChatId === chat.id) {
+        this.renderMessages();
+      }
+      
+      console.log(`[Sync] Real-time update for chat: ${chat.title || chat.id}`);
+    }
+  }
+  
+  // Broadcast chat update to connected peer
+  broadcastChatUpdate(chatId) {
+    if (!this.relayEncrypted || !this.relayWs) return;
+    
+    const chat = this.chats[chatId];
+    if (!chat) return;
+    
+    this.sendRelayMessage({
+      type: 'chat-update',
+      chat: chat,
+      deviceId: this.getDeviceId()
+    });
+  }
+  
+  handleRelayMessage(msg) {
+    // Handle sync messages
+    if (msg.type === 'sync-meta') {
+      this.handleSyncMeta(msg);
+      return;
+    }
+    if (msg.type === 'sync-request') {
+      this.handleSyncRequest(msg);
+      return;
+    }
+    if (msg.type === 'sync-data') {
+      this.handleSyncData(msg);
+      return;
+    }
+    if (msg.type === 'chat-update') {
+      this.handleChatUpdate(msg);
+      return;
+    }
+    
+    // Handle gateway request from phone (desktop proxies to gateway)
+    if (msg.type === 'gateway-request' && msg.data) {
+      // Forward to gateway
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify(msg.data));
+      }
+      return;
+    }
+    
+    // Forward other messages from mobile client to gateway (legacy support)
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(msg));
+    }
+  }
+  
+  // Forward gateway response to phone via relay
+  forwardToRelay(gatewayMsg) {
+    if (!this.relayEncrypted || !this.relayWs) return;
+    
+    this.sendRelayMessage({
+      type: 'gateway-response',
+      data: gatewayMsg
+    });
+  }
+  
+  sendRelayMessage(msg) {
+    if (!this.relayWs || this.relayWs.readyState !== WebSocket.OPEN) {
+      console.error('Relay not connected');
+      return;
+    }
+    
+    if (this.relayEncrypted && this.relayCrypto) {
+      // Send encrypted
+      const envelope = this.relayCrypto.createEnvelope(msg);
+      this.relayWs.send(JSON.stringify(envelope));
+    } else {
+      // Send unencrypted (only during key exchange)
+      this.relayWs.send(JSON.stringify(msg));
+    }
+  }
+  
+  renderQRCode(qrContainer, placeholder, data) {
     // Hide placeholder, show QR
     if (placeholder) placeholder.style.display = 'none';
     qrContainer.style.display = 'block';
@@ -1505,7 +1728,7 @@ window.CLAWGPT_CONFIG = {
     // Generate QR code
     if (typeof QRCode !== 'undefined') {
       new QRCode(qrContainer, {
-        text: mobileUrl,
+        text: data,
         width: 160,
         height: 160,
         colorDark: '#000000',
@@ -1514,6 +1737,123 @@ window.CLAWGPT_CONFIG = {
       });
     } else {
       qrContainer.innerHTML = '<p style="color: var(--text-muted);">QR library not loaded</p>';
+    }
+  }
+  
+  // === Mobile QR Scanning (Capacitor) ===
+  
+  async startQrScan() {
+    // Check if we're in a Capacitor native app
+    if (typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform()) {
+      await this.startNativeQrScan();
+    } else {
+      // Fallback for web - show instructions
+      this.showToast('QR scanning requires the mobile app. Use Manual Setup instead.');
+      const advancedToggle = document.getElementById('advancedSetupToggle');
+      const advancedFields = document.getElementById('advancedSetupFields');
+      if (advancedToggle && advancedFields) {
+        advancedFields.style.display = 'block';
+        advancedToggle.classList.add('expanded');
+      }
+    }
+  }
+  
+  async startNativeQrScan() {
+    try {
+      const { BarcodeScanner } = Capacitor.Plugins;
+      
+      // Check/request camera permission
+      const { camera } = await BarcodeScanner.checkPermissions();
+      if (camera !== 'granted') {
+        const result = await BarcodeScanner.requestPermissions();
+        if (result.camera !== 'granted') {
+          this.showToast('Camera permission is required to scan QR codes');
+          return;
+        }
+      }
+      
+      // Hide the modal and show scanner UI
+      const modal = document.getElementById('setupModal');
+      if (modal) modal.style.opacity = '0';
+      document.body.classList.add('scanner-active');
+      
+      const listener = await BarcodeScanner.addListener('barcodeScanned', async (result) => {
+        const barcode = result.barcode;
+        if (barcode && barcode.rawValue) {
+          await listener.remove();
+          await BarcodeScanner.stopScan();
+          document.body.classList.remove('scanner-active');
+          if (modal) modal.style.opacity = '1';
+          
+          this.handleQrCodeScanned(barcode.rawValue);
+        }
+      });
+      
+      await BarcodeScanner.startScan();
+      
+      // Store cancel function for later use
+      this.cancelQrScan = async () => {
+        await listener.remove();
+        await BarcodeScanner.stopScan();
+        document.body.classList.remove('scanner-active');
+        if (modal) modal.style.opacity = '1';
+      };
+      
+    } catch (error) {
+      console.error('QR scan error:', error);
+      document.body.classList.remove('scanner-active');
+      const modal = document.getElementById('setupModal');
+      if (modal) modal.style.opacity = '1';
+      this.showToast('Failed to start QR scanner: ' + error.message);
+    }
+  }
+  
+  handleQrCodeScanned(data) {
+    console.log('QR scanned raw data:', data);
+    
+    try {
+      // Check if it's a relay URL (web URL with relay params)
+      if (data.includes('relay=') && data.includes('channel=') && data.includes('pubkey=')) {
+        const url = new URL(data);
+        const relayServer = url.searchParams.get('relay');
+        const channelId = url.searchParams.get('channel');
+        const publicKey = url.searchParams.get('pubkey');
+        
+        if (relayServer && channelId && publicKey) {
+          // Close setup modal
+          const modal = document.getElementById('setupModal');
+          if (modal) modal.style.display = 'none';
+          
+          // Join relay as client
+          this.joinRelayAsClient({ server: relayServer, channel: channelId, pubkey: publicKey });
+          return;
+        }
+      }
+      
+      // Try to parse as direct connection URL
+      const url = new URL(data);
+      const gatewayUrl = url.searchParams.get('gateway') || url.searchParams.get('url');
+      const authToken = url.searchParams.get('token') || url.searchParams.get('auth');
+      const sessionKey = url.searchParams.get('session') || 'main';
+      
+      if (gatewayUrl) {
+        this.gatewayUrl = gatewayUrl;
+        this.authToken = authToken || '';
+        this.sessionKey = sessionKey;
+        this.saveSettings();
+        
+        // Close setup modal and connect
+        const modal = document.getElementById('setupModal');
+        if (modal) modal.style.display = 'none';
+        
+        this.showToast('Settings saved! Connecting...');
+        this.autoConnect();
+      } else {
+        this.showToast('Invalid QR code format', true);
+      }
+    } catch (error) {
+      console.error('QR parse error:', error);
+      this.showToast('Could not parse QR code: ' + error.message, true);
     }
   }
   
@@ -1659,6 +1999,48 @@ window.CLAWGPT_CONFIG = {
     const showQrBtn = document.getElementById('showQrBtn');
     if (showQrBtn) {
       showQrBtn.addEventListener('click', () => this.showMobileQR());
+    }
+    
+    // QR Scan button (mobile app - scan desktop's QR)
+    const scanQrBtn = document.getElementById('scanQrBtn');
+    if (scanQrBtn) {
+      scanQrBtn.addEventListener('click', () => this.startQrScan());
+    }
+    
+    // Advanced setup toggle (mobile app)
+    const advancedToggle = document.getElementById('advancedSetupToggle');
+    const advancedFields = document.getElementById('advancedSetupFields');
+    if (advancedToggle && advancedFields) {
+      advancedToggle.addEventListener('click', () => {
+        const isExpanded = advancedFields.style.display !== 'none';
+        advancedFields.style.display = isExpanded ? 'none' : 'block';
+        advancedToggle.classList.toggle('expanded', !isExpanded);
+      });
+    }
+    
+    // Setup save button (mobile app manual setup)
+    const setupSaveBtn = document.getElementById('setupSaveBtn');
+    if (setupSaveBtn) {
+      setupSaveBtn.addEventListener('click', () => {
+        const gatewayUrl = document.getElementById('setupGatewayUrl')?.value;
+        const authToken = document.getElementById('setupAuthToken')?.value;
+        const sessionKey = document.getElementById('setupSessionKey')?.value || 'main';
+        
+        if (gatewayUrl) {
+          this.gatewayUrl = gatewayUrl;
+          this.authToken = authToken || '';
+          this.sessionKey = sessionKey;
+          this.saveSettings();
+          
+          const modal = document.getElementById('setupModal');
+          if (modal) modal.style.display = 'none';
+          
+          this.showToast('Settings saved!');
+          this.autoConnect();
+        } else {
+          this.showToast('Please enter a Gateway URL', true);
+        }
+      });
     }
     
     this.elements.menuBtn.addEventListener('click', () => this.toggleSidebar());
@@ -2632,32 +3014,20 @@ Example: [0, 2, 5]`;
 
   // WebSocket connection
   autoConnect() {
-    if (this.relayMode && this.relayServer && this.relayChannelId) {
-      this.connectToRelay();
-    } else if (this.gatewayUrl) {
+    if (this.gatewayUrl) {
       this.connect();
     }
   }
 
   async connect() {
-    // Get settings from UI only if not already set (e.g., from QR scan)
-    const uiGateway = this.elements.gatewayUrl?.value?.trim();
-    const uiToken = this.elements.authToken?.value?.trim();
-    const uiSession = this.elements.sessionKeyInput?.value?.trim();
-    
-    // Use UI values only if they're filled in, otherwise keep existing values
-    if (uiGateway) this.gatewayUrl = uiGateway;
-    if (uiToken) this.authToken = uiToken;
-    if (uiSession) this.sessionKey = uiSession;
-    
-    // Fall back to defaults if still not set
-    if (!this.gatewayUrl) this.gatewayUrl = 'ws://127.0.0.1:18789';
-    if (!this.sessionKey) this.sessionKey = 'main';
-    
+    // Get settings from UI
+    this.gatewayUrl = this.elements.gatewayUrl.value.trim() || 'ws://127.0.0.1:18789';
+    this.authToken = this.elements.authToken.value.trim();
+    this.sessionKey = this.elements.sessionKeyInput.value.trim() || 'main';
     this.saveSettings();
 
     this.closeSettings();
-    this.setStatus('Connecting to ' + this.gatewayUrl);
+    this.setStatus('Connecting...');
 
     try {
       if (this.ws) {
@@ -2694,6 +3064,11 @@ Example: [0, 2, 5]`;
   }
 
   handleMessage(msg) {
+    // Forward to relay if connected (for mobile clients) - but not if we ARE the mobile client
+    if (this.relayWs && this.relayWs.readyState === WebSocket.OPEN && this.relayEncrypted && !this.relayIsGatewayProxy) {
+      this.forwardToRelay(msg);
+    }
+    
     // Handle challenge
     if (msg.type === 'event' && msg.event === 'connect.challenge') {
       this.sendConnect(msg.payload?.nonce);
@@ -2781,7 +3156,11 @@ Example: [0, 2, 5]`;
   }
 
   async request(method, params) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    // Check connection - either direct WS or via relay proxy
+    const directConnected = this.ws && this.ws.readyState === WebSocket.OPEN;
+    const relayConnected = this.relayIsGatewayProxy && this.relayWs && this.relayWs.readyState === WebSocket.OPEN;
+    
+    if (!directConnected && !relayConnected) {
       throw new Error('Not connected');
     }
 
@@ -2791,10 +3170,11 @@ Example: [0, 2, 5]`;
     return new Promise((resolve, reject) => {
       this.pendingRequests.set(id, { resolve, reject });
       
-      // Use encrypted sending if in relay mode with E2E encryption
-      if (this.relayMode && this.relayEncrypted && this.relayCrypto) {
-        this.sendRelayMessage(msg);
+      if (this.relayIsGatewayProxy) {
+        // Send via relay to desktop, which forwards to gateway
+        this.sendViaRelay(msg);
       } else {
+        // Direct WebSocket connection
         this.ws.send(JSON.stringify(msg));
       }
 
@@ -4658,7 +5038,7 @@ Example: [0, 2, 5]`;
     }
     this.chats[this.currentChatId].messages.push(userMsg);
     this.chats[this.currentChatId].updatedAt = Date.now();
-    this.saveChats();
+    this.saveChats(this.currentChatId);  // Broadcast to peer
     
     // Store in clawgpt-memory for search
     const chat = this.chats[this.currentChatId];
@@ -4799,7 +5179,7 @@ Example: [0, 2, 5]`;
     };
     this.chats[this.currentChatId].messages.push(assistantMsg);
     this.chats[this.currentChatId].updatedAt = Date.now();
-    this.saveChats();
+    this.saveChats(this.currentChatId);  // Broadcast to peer
     
     // Store in clawgpt-memory for search
     const chat = this.chats[this.currentChatId];

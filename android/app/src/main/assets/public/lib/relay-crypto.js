@@ -136,36 +136,41 @@ class RelayCrypto {
   }
 
   /**
-   * Generate verification emoji from shared key
-   * Both sides will generate the same emoji if keys match
-   * @returns {string} 4 emoji characters
+   * Generate verification words from shared key
+   * Both sides will generate the same words if keys match
+   * @returns {string} 4 words separated by dashes (e.g., "apple-tiger-castle-moon")
    */
-  getVerificationEmoji() {
+  getVerificationCode() {
     if (!this.sharedKey) {
-      return '❓❓❓❓';
+      return 'not-yet-connected';
     }
     
     // Hash the shared key to get deterministic bytes
     const hash = nacl.hash(this.sharedKey);
     
-    // Use first 4 bytes to select 4 emoji
-    const emoji = [
-      '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼',
-      '🐨', '🐯', '🦁', '🐮', '🐷', '🐸', '🐵', '🐔',
-      '🦄', '🐝', '🦋', '🐢', '🐙', '🦀', '🐠', '🐬',
-      '🌸', '🌺', '🌻', '🌹', '🌷', '🍀', '🌴', '🌵',
-      '🍎', '🍊', '🍋', '🍇', '🍓', '🍒', '🥝', '🍑',
-      '🌮', '🍕', '🍔', '🌭', '🍟', '🍿', '🧁', '🍩',
-      '⚽', '🏀', '🎾', '🎱', '🎯', '🎪', '🎨', '🎭',
-      '🚀', '✈️', '🚁', '🚂', '🚗', '🏎️', '🛵', '🚲'
+    // Simple, memorable words (64 words = 6 bits of entropy each, 4 words = 24 bits total)
+    const words = [
+      'apple', 'tiger', 'castle', 'moon', 'river', 'forest', 'dragon', 'storm',
+      'crystal', 'falcon', 'garden', 'hammer', 'island', 'jungle', 'knight', 'laser',
+      'magic', 'ninja', 'ocean', 'planet', 'quest', 'rocket', 'shadow', 'thunder',
+      'ultra', 'violet', 'wizard', 'xray', 'yellow', 'zebra', 'anchor', 'blaze',
+      'comet', 'delta', 'ember', 'frost', 'glider', 'horizon', 'inferno', 'jade',
+      'karma', 'lunar', 'meteor', 'nova', 'orbit', 'phoenix', 'quartz', 'radar',
+      'sonic', 'titan', 'umbra', 'vortex', 'wave', 'xenon', 'yarn', 'zephyr',
+      'alpha', 'brave', 'coral', 'drift', 'eagle', 'flame', 'golden', 'halo'
     ];
     
     return [
-      emoji[hash[0] % emoji.length],
-      emoji[hash[1] % emoji.length],
-      emoji[hash[2] % emoji.length],
-      emoji[hash[3] % emoji.length]
-    ].join('');
+      words[hash[0] % words.length],
+      words[hash[1] % words.length],
+      words[hash[2] % words.length],
+      words[hash[3] % words.length]
+    ].join('-');
+  }
+
+  // Legacy alias for backward compatibility
+  getVerificationEmoji() {
+    return this.getVerificationCode();
   }
 
   /**
