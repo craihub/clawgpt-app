@@ -2269,10 +2269,16 @@ window.CLAWGPT_CONFIG = {
     
     this.elements.menuBtn.addEventListener('click', () => this.toggleSidebar());
     
-    // Sidebar overlay - close sidebar when clicking outside
+    // Sidebar overlay - close sidebar when clicking outside (only if sidebar is open)
     const sidebarOverlay = document.getElementById('sidebarOverlay');
     if (sidebarOverlay) {
-      sidebarOverlay.addEventListener('click', () => this.closeSidebar());
+      sidebarOverlay.addEventListener('click', (e) => {
+        // Only close if overlay is actually active
+        if (sidebarOverlay.classList.contains('active')) {
+          e.preventDefault();
+          this.closeSidebar();
+        }
+      });
     }
     
     // Mobile close button (top of sidebar)
@@ -2567,16 +2573,14 @@ window.CLAWGPT_CONFIG = {
     let touchStartY = 0;
     let touchStartTime = 0;
     
-    const messagesArea = this.elements.messages;
-    if (!messagesArea) return;
-    
-    messagesArea.addEventListener('touchstart', (e) => {
+    // Use document for full-screen swipe detection
+    document.addEventListener('touchstart', (e) => {
       touchStartX = e.touches[0].clientX;
       touchStartY = e.touches[0].clientY;
       touchStartTime = Date.now();
     }, { passive: true });
     
-    messagesArea.addEventListener('touchend', (e) => {
+    document.addEventListener('touchend', (e) => {
       const touchEndX = e.changedTouches[0].clientX;
       const touchEndY = e.changedTouches[0].clientY;
       const touchDuration = Date.now() - touchStartTime;
@@ -2588,11 +2592,13 @@ window.CLAWGPT_CONFIG = {
       if (touchDuration < 300 && Math.abs(deltaX) > 80 && Math.abs(deltaY) < 50) {
         if (deltaX > 0 && touchStartX < 50) {
           // Swipe right from left edge - open sidebar
+          e.preventDefault();
           this.elements.sidebar.classList.add('open');
           const overlay = document.getElementById('sidebarOverlay');
           if (overlay) overlay.classList.add('active');
         } else if (deltaX < 0 && this.elements.sidebar.classList.contains('open')) {
           // Swipe left while sidebar is open - close it
+          e.preventDefault();
           this.closeSidebar();
         }
       }
@@ -2626,7 +2632,13 @@ window.CLAWGPT_CONFIG = {
     this.elements.sidebar.classList.remove('open');
     const overlay = document.getElementById('sidebarOverlay');
     if (overlay) {
+      // Ensure overlay is completely hidden when sidebar closes
       overlay.classList.remove('active');
+      overlay.style.display = 'none';
+      // Re-enable display after a tick to allow CSS to take over
+      setTimeout(() => {
+        overlay.style.display = '';
+      }, 0);
     }
   }
   
@@ -3652,7 +3664,10 @@ Example: [0, 2, 5]`;
     this.renderMessages();
     this.renderChatList();
     this.updateTokenDisplay(); // Also updates model display
-    this.closeSidebar();
+    // Only close sidebar on mobile, not on desktop
+    if (window.innerWidth <= 768) {
+      this.closeSidebar();
+    }
   }
 
   deleteChat(chatId) {

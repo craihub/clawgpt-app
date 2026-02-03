@@ -194,6 +194,7 @@ body {
   opacity: 0;
   transition: opacity 0.15s;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .chat-item:hover .chat-actions {
