@@ -2486,6 +2486,40 @@ window.CLAWGPT_CONFIG = {
 
     // Render chat list
     this.renderChatList();
+    
+    // Auto-reconnect when app returns to foreground
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        this.checkAndReconnect();
+      }
+    });
+    
+    // Also handle Capacitor app state changes (more reliable on mobile)
+    if (window.Capacitor?.Plugins?.App) {
+      window.Capacitor.Plugins.App.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          this.checkAndReconnect();
+        }
+      });
+    }
+  }
+  
+  // Check connection status and reconnect if needed
+  checkAndReconnect() {
+    console.log('App became visible, checking connections...');
+    
+    // Check relay connection
+    if (this.relayInfo && (!this.relayWs || this.relayWs.readyState !== WebSocket.OPEN)) {
+      console.log('Relay disconnected, attempting reconnect...');
+      this.relayEncrypted = false;
+      this.joinRelayAsClient(this.relayInfo);
+    }
+    
+    // Check direct gateway connection (if not using relay)
+    if (!this.relayIsGatewayProxy && this.gatewayUrl && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+      console.log('Gateway disconnected, attempting reconnect...');
+      this.connect();
+    }
   }
 
   applyTheme() {
@@ -3526,7 +3560,7 @@ Example: [0, 2, 5]`;
     this.renderMessages();
     this.renderChatList();
     this.updateTokenDisplay(); // Also updates model display
-    this.elements.sidebar.classList.remove('open');
+    this.closeSidebar();
   }
 
   deleteChat(chatId) {
