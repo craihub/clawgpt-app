@@ -1369,7 +1369,7 @@ window.CLAWGPT_CONFIG = {
       const verifyCode = this.relayCrypto.getVerificationCode();
       console.log('E2E encryption established! Verification:', verifyCode);
       
-      this.setStatus('Secure relay connected');
+      this.setStatus('Connected', true);
       this.showToast(`Secure connection! Verify: ${verifyCode}`);
       
       // Display verification in UI
@@ -1407,6 +1407,11 @@ window.CLAWGPT_CONFIG = {
             this.showToast('Desktop disconnected - will reconnect when desktop is back', true);
             this.setStatus('Waiting for desktop...');
             this.relayEncrypted = false; // Need new key exchange when host returns
+          } else if (msg.event === 'replaced') {
+            // Another client connected to the same room - we got kicked
+            console.log('Replaced by another client connection');
+            this.showToast('Reconnected from another device', true);
+            // Don't clear relay info - the new connection is probably us reconnecting
           } else if (msg.event === 'error') {
             this.showToast(msg.error || 'Relay error', true);
           }
@@ -1420,7 +1425,7 @@ window.CLAWGPT_CONFIG = {
           if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
             const verifyCode = this.relayCrypto.getVerificationCode();
             console.log('Updated shared secret, verification:', verifyCode);
-            this.setStatus('Connected');
+            this.setStatus('Connected', true);
             this.showToast(`Secure! Verify: ${verifyCode}`);
             this.showRelayClientStatus(verifyCode);
             // Update saved relay info with new pubkey
