@@ -1354,29 +1354,10 @@ window.CLAWGPT_CONFIG = {
     }
     
     this.relayWs.onopen = () => {
-      console.log('Connected to relay room as client');
-      
-      // Send our public key to complete key exchange
-      this.relayWs.send(JSON.stringify({
-        type: 'keyexchange',
-        publicKey: this.relayCrypto.getPublicKey()
-      }));
-      
-      // Mark as encrypted (we already derived shared secret from host's pubkey in QR)
-      this.relayEncrypted = true;
-      
-      // Show verification code
-      const verifyCode = this.relayCrypto.getVerificationCode();
-      console.log('E2E encryption established! Verification:', verifyCode);
-      
-      this.setStatus('Connected', true);
-      this.showToast(`Secure connection! Verify: ${verifyCode}`);
-      
-      // Display verification in UI
-      this.showRelayClientStatus(verifyCode);
-      
-      // Send our chat metadata to sync
-      this.sendChatSyncMeta();
+      console.log('Connected to relay room as client, waiting for room.joined...');
+      this.setStatus('Connecting...', false);
+      // Don't send keyexchange here - wait for room.joined event
+      // That way we know if host is connected and avoid double keyexchange
     };
     
     this.relayWs.onmessage = (event) => {
@@ -1387,22 +1368,37 @@ window.CLAWGPT_CONFIG = {
         if (msg.type === 'relay') {
           if (msg.event === 'room.joined' || msg.event === 'channel.joined') {
             console.log('Joined relay room:', msg);
-            // If host is already connected, we need to do key exchange
+            // If host is already connected, do key exchange
             if (msg.hostConnected) {
               console.log('Host is connected, sending key exchange...');
-              // Send our public key to complete key exchange
               this.relayWs.send(JSON.stringify({
                 type: 'keyexchange',
                 publicKey: this.relayCrypto.getPublicKey()
               }));
+              // Mark as encrypted (we pre-derived shared secret from host's pubkey in QR)
+              this.relayEncrypted = true;
+              const verifyCode = this.relayCrypto.getVerificationCode();
+              console.log('E2E encryption established! Verification:', verifyCode);
+              this.setStatus('Connected', true);
+              this.showToast(`Secure! Verify: ${verifyCode}`);
+              this.showRelayClientStatus(verifyCode);
+              this.sendChatSyncMeta();
+            } else {
+              // Host not connected yet, wait for host.connected event
+              this.setStatus('Waiting for desktop...', false);
             }
           } else if (msg.event === 'host.connected') {
-            // Host (re)connected - need to redo key exchange
-            console.log('Host connected, sending key exchange...');
+            // Host (re)connected - redo key exchange
+            console.log('Host reconnected, sending key exchange...');
+            // Generate fresh keypair for forward secrecy
+            this.relayCrypto.generateKeyPair();
             this.relayWs.send(JSON.stringify({
               type: 'keyexchange',
               publicKey: this.relayCrypto.getPublicKey()
             }));
+            // Note: Don't mark as encrypted yet - wait for keyexchange-response
+            // because host has new keypair and we need its new pubkey
+            this.setStatus('Reconnecting...', false);
           } else if (msg.event === 'host.disconnected') {
             this.showToast('Desktop disconnected - will reconnect when desktop is back', true);
             this.setStatus('Waiting for desktop...');
@@ -1423,6 +1419,7 @@ window.CLAWGPT_CONFIG = {
           console.log('Received host public key response');
           // Update host's public key and re-derive shared secret
           if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
+            this.relayEncrypted = true;
             const verifyCode = this.relayCrypto.getVerificationCode();
             console.log('Updated shared secret, verification:', verifyCode);
             this.setStatus('Connected', true);
@@ -1433,6 +1430,8 @@ window.CLAWGPT_CONFIG = {
               this.relayInfo.pubkey = msg.publicKey;
               localStorage.setItem('clawgpt-relay', JSON.stringify(this.relayInfo));
             }
+            // Start chat sync after encryption is established
+            this.sendChatSyncMeta();
           }
           return;
         }
