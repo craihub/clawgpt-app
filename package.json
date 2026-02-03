@@ -1,0 +1,20 @@
+{
+  "name": "clawgpt-app",
+  "version": "1.0.0",
+  "description": "ClawGPT mobile app - ChatGPT-like interface for OpenClaw",
+  "main": "index.js",
+  "scripts": {
+    "build": "npx cap sync android && cd android && ./gradlew assembleDebug",
+    "build:release": "npx cap sync android && cd android && ./gradlew assembleRelease",
+    "sync": "npx cap sync android",
+    "open:android": "npx cap open android"
+  },
+  "keywords": ["openclaw", "clawgpt", "ai", "chatgpt", "android"],
+  "author": "Curve Reality",
+  "license": "MIT",
+  "dependencies": {
+    "@capacitor/android": "^8.0.2",
+    "@capacitor/cli": "^7.4.5",
+    "@capacitor/core": "^8.0.2"
+  }
+}

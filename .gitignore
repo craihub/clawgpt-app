@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Android build outputs
+android/app/build/
+android/.gradle/
+android/build/
+*.apk
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config
+www/config.js

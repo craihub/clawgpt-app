@@ -1,0 +1,57 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Sync Capacitor
+        run: npx cap sync android
+      
+      - name: Build Debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug
+      
+      - name: Build Release APK
+        working-directory: android
+        run: ./gradlew assembleRelease
+      
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawgpt-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+      
+      - name: Upload Release APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawgpt-release
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk

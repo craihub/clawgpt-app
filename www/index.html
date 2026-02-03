@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'self';
+    script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+    style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
+    connect-src *;
+    img-src 'self' data: blob:;
+    font-src 'self' data:;
+  ">
+  <title>ClawGPT</title>
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="stylesheet" href="style.css">
+  <!-- Prism.js for syntax highlighting -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar overlay for mobile -->
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <button class="mobile-close-btn" id="mobileCloseBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"></line>
+            <line x1="6" y1="6" x2="18" y2="18"></line>
+          </svg>
+          <span>Close menu</span>
+        </button>
+        <button class="new-chat-btn" id="newChatBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span class="btn-text">New chat</span>
+        </button>
+        <button class="search-btn-collapsed" id="searchBtnCollapsed" title="Search chats">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.35-4.35"/>
+          </svg>
+        </button>
+        <div class="sidebar-search" id="sidebarSearch">
+          <svg class="sidebar-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" id="sidebarSearchInput" placeholder="Search chats...">
+        </div>
+      </div>
+      <div class="chat-list" id="chatList">
+        <!-- Chat history items go here -->
+      </div>
+      <div class="sidebar-footer">
+        <button class="settings-btn" id="settingsBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span class="btn-text">Settings</span>
+        </button>
+        <button class="help-btn" id="helpBtn" title="Keyboard shortcuts">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+            <circle cx="12" cy="17" r="1" fill="currentColor" stroke="none"></circle>
+          </svg>
+          <span class="btn-text">Help</span>
+        </button>
+        <button class="collapse-btn" id="collapseBtn" title="Collapse sidebar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="11 17 6 12 11 7"></polyline>
+            <polyline points="18 17 13 12 18 7"></polyline>
+          </svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main chat area -->
+    <main class="main">
+      <header class="header">
+        <button class="menu-btn" id="menuBtn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+        </button>
+        <h1 class="title">ClawGPT</h1>
+        <div class="header-info">
+          <div class="chat-model" id="chatModel" title="Current model"></div>
+          <div class="chat-tokens" id="chatTokens" title="Estimated tokens in this conversation"></div>
+        </div>
+        <div class="status" id="status">Disconnected</div>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="welcome" id="welcome">
+          <h2>ClawGPT</h2>
+          <p>A simple ChatGPT-like interface for OpenClaw</p>
+        </div>
+      </div>
+
+      <div class="input-area">
+        <div class="image-preview" id="imagePreview"></div>
+        <div class="input-container">
+          <button class="attach-btn" id="attachBtn" title="Attach file">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <input type="file" id="fileInput" accept="image/*,.txt,.md,.json,.js,.ts,.py,.html,.css,.xml,.yaml,.yml,.csv,.log,.sh,.bash,.zsh,.env,.ini,.conf,.cfg,.pdf,.xlsx,.xls" multiple style="display: none;">
+          <textarea 
+            id="messageInput" 
+            placeholder="Message"
+            rows="1"
+          ></textarea>
+          <button class="voice-btn" id="voiceBtn" title="Voice input">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="23"></line>
+              <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+          </button>
+          <button class="send-btn" id="sendBtn" disabled>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+          <button class="stop-btn" id="stopBtn" style="display: none;">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12" rx="2"></rect>
+            </svg>
+          </button>
+        </div>
+        <p class="disclaimer">ClawGPT connects to your local OpenClaw gateway</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- Search Modal -->
+  <div class="modal" id="searchModal">
+    <div class="search-container">
+      <div class="search-header">
+        <div class="search-input-wrapper">
+          <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/>
+            <path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input type="text" id="searchInput" placeholder="Search all chats..." autocomplete="off">
+          <kbd class="search-hint">ESC</kbd>
+        </div>
+        <div class="search-filters">
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="user">My messages</button>
+          <button class="filter-btn" data-filter="assistant">AI responses</button>
+        </div>
+        <div class="search-ai-options">
+          <label class="search-toggle" title="Search AI-generated summaries and topics (uses tokens)">
+            <input type="checkbox" id="searchDeepToggle">
+            <span class="toggle-label">Deep Search</span>
+          </label>
+          <label class="search-toggle" title="Find conceptually related chats even without keyword match (uses more tokens)">
+            <input type="checkbox" id="searchDeeperToggle">
+            <span class="toggle-label">Deeper Search</span>
+          </label>
+          <span class="search-ai-hint">Not finding it? Try Deep/Deeper search (uses AI tokens)</span>
+        </div>
+      </div>
+      <div class="search-results" id="searchResults">
+        <div class="search-empty">Start typing to search...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="modal" id="settingsModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button class="close-btn" id="closeSettings">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="gatewayUrl">Gateway URL</label>
+          <input type="text" id="gatewayUrl" placeholder="ws://localhost:18789">
+        </div>
+        <div class="form-group">
+          <label for="authToken">Auth Token (optional)</label>
+          <input type="password" id="authToken" placeholder="Enter token if required">
+        </div>
+        <div class="form-group">
+          <label for="sessionKey">Session Key</label>
+          <input type="text" id="sessionKey" placeholder="main" value="main">
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="darkMode" checked>
+            Dark Mode
+          </label>
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-section-title">AI Features</div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="smartSearch" checked>
+            Smart Search
+          </label>
+          <span class="setting-hint">Auto-generates chat summaries for better search (uses AI credits)</span>
+          <div class="sub-setting" id="semanticSearchSetting">
+            <label>
+              <input type="checkbox" id="semanticSearch">
+              Semantic Search
+            </label>
+            <span class="setting-hint">Find conceptually related chats even without keyword match (uses AI credits per search)</span>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="showTokens">
+            Show Message Tokens
+          </label>
+          <span class="setting-hint">Display estimated token count per message</span>
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-section-title">Data</div>
+        <div class="form-group data-actions">
+          <button class="data-btn" id="exportChatsBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export Chats
+          </button>
+          <button class="data-btn" id="importChatsBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/>
+              <line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
+            Import Chats
+          </button>
+          <input type="file" id="importFileInput" accept=".json" style="display: none;">
+          <span class="setting-hint">Export saves all chats to a JSON file. Import merges chats from a file.</span>
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-section-title">Mobile Access</div>
+        <div class="form-group mobile-access">
+          <div class="qr-container" id="qrContainer">
+            <div class="qr-placeholder" id="qrPlaceholder">
+              <button class="data-btn" id="showQrBtn">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="3" height="3"></rect>
+                  <rect x="18" y="14" width="3" height="3"></rect>
+                  <rect x="14" y="18" width="3" height="3"></rect>
+                  <rect x="18" y="18" width="3" height="3"></rect>
+                </svg>
+                Show QR Code
+              </button>
+            </div>
+            <div class="qr-code" id="qrCode" style="display:none;"></div>
+          </div>
+          <span class="setting-hint">Scan with your phone to open ClawGPT on mobile (same WiFi network)</span>
+          <span class="setting-hint warning">⚠️ Don't share this QR code — it contains your auth token</span>
+          <div class="mobile-url" id="mobileUrl"></div>
+        </div>
+        <div class="settings-actions">
+          <button class="save-btn" id="saveSettingsBtn">Save</button>
+          <button class="connect-btn" id="connectBtn">Connect</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Regenerate Modal -->
+  <div class="modal" id="regenerateModal">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <h2>Regenerate Response</h2>
+        <button class="close-btn" id="closeRegenerate">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="regenerateModelSelect">Model</label>
+          <select id="regenerateModelSelect">
+            <option value="">Current model</option>
+          </select>
+        </div>
+        <div class="settings-actions">
+          <button class="cancel-btn" id="cancelRegenerateBtn">Cancel</button>
+          <button class="save-btn" id="confirmRegenerateBtn">Regenerate</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Message Modal -->
+  <div class="modal" id="editMessageModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Edit Message</h2>
+        <button class="close-btn" id="closeEditMessage">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="editMessageInput">Message</label>
+          <textarea id="editMessageInput" rows="4" placeholder="Enter your message"></textarea>
+        </div>
+        <p class="branch-hint">This will create a new branched chat, keeping the original intact. (Ctrl+Enter to send)</p>
+        <div class="settings-actions">
+          <button class="cancel-btn" id="cancelEditMessageBtn">Cancel</button>
+          <button class="save-btn" id="saveEditMessageBtn">Branch & Send</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Rename Chat Modal -->
+  <div class="modal" id="renameModal">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <h2>Rename Chat</h2>
+        <button class="close-btn" id="closeRename">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="renameChatInput">Chat Name</label>
+          <input type="text" id="renameChatInput" placeholder="Enter new name">
+        </div>
+        <div class="settings-actions">
+          <button class="cancel-btn" id="cancelRenameBtn">Cancel</button>
+          <button class="save-btn" id="saveRenameBtn">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shortcuts Modal -->
+  <div class="modal" id="shortcutsModal">
+    <div class="modal-content modal-small">
+      <div class="modal-header">
+        <h2>Keyboard Shortcuts</h2>
+        <button class="close-btn" id="closeShortcuts">&times;</button>
+      </div>
+      <div class="modal-body shortcuts-body">
+        <div class="shortcut-group">
+          <div class="shortcut-group-title">General</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Send message</span>
+            <span class="shortcut-keys"><kbd>Enter</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">New line</span>
+            <span class="shortcut-keys"><kbd>Shift</kbd> + <kbd>Enter</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">New chat</span>
+            <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd></span>
+          </div>
+        </div>
+        <div class="shortcut-group">
+          <div class="shortcut-group-title">Search</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Open search</span>
+            <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>K</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Close search</span>
+            <span class="shortcut-keys"><kbd>Esc</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Navigate results</span>
+            <span class="shortcut-keys"><kbd>↑</kbd> <kbd>↓</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Select result</span>
+            <span class="shortcut-keys"><kbd>Enter</kbd></span>
+          </div>
+        </div>
+        <div class="shortcut-group">
+          <div class="shortcut-group-title">Editing</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Send edited message</span>
+            <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Cancel edit</span>
+            <span class="shortcut-keys"><kbd>Esc</kbd></span>
+          </div>
+        </div>
+        <div class="shortcut-group">
+          <div class="shortcut-group-title">This modal</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Show shortcuts</span>
+            <span class="shortcut-keys"><kbd>?</kbd></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Setup Wizard Modal -->
+  <div class="modal" id="setupModal">
+    <div class="modal-content setup-wizard">
+      <div class="modal-header">
+        <h2>👋 Welcome to ClawGPT</h2>
+      </div>
+      <div class="modal-body">
+        <p class="setup-intro">Let's connect to your OpenClaw. Just two quick steps!</p>
+        
+        <!-- Step 1: Get Token -->
+        <div class="setup-step-box">
+          <div class="setup-step-header">
+            <span class="setup-step-number">1</span>
+            <span class="setup-step-title">Get your token</span>
+          </div>
+          <div class="setup-step-content">
+            <div class="ask-openclaw-row">
+              <span class="ask-label">Ask OpenClaw:</span>
+              <code class="ask-phrase" id="askTokenPhrase">What's my gateway token?</code>
+              <button type="button" class="copy-btn" data-copy="What's my gateway token?" title="Copy to clipboard">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <div class="token-input-wrapper">
+              <input type="password" id="setupAuthToken" placeholder="Paste your token here">
+              <span class="token-status" id="tokenStatus"></span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Step 2: Save Config -->
+        <div class="setup-step-box">
+          <div class="setup-step-header">
+            <span class="setup-step-number">2</span>
+            <span class="setup-step-title">Save the config file</span>
+          </div>
+          <div class="setup-step-content">
+            <button class="save-btn setup-save-btn" id="setupSaveConfigBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;margin-right:6px;">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download config.js
+            </button>
+            <div class="setup-folder-instructions" id="setupFolderInstructions">
+              <p>Then move it to your ClawGPT folder:</p>
+              <div class="ask-openclaw-row">
+                <span class="ask-label">Ask OpenClaw:</span>
+                <code class="ask-phrase" id="askFolderPhrase">Open my clawgpt folder</code>
+                <button type="button" class="copy-btn" data-copy="Open my clawgpt folder" title="Copy to clipboard">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <p class="setup-folder-hint">Drag the downloaded file into the folder that opens.</p>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Connect -->
+        <div class="setup-step" id="setupStep1">
+          <div class="setup-actions">
+            <button class="save-btn" id="setupConnectBtn">Connect</button>
+          </div>
+          <p class="setup-refresh-hint">Or just refresh this page after saving the file.</p>
+        </div>
+        
+        <!-- Hidden fields for compatibility -->
+        <input type="hidden" id="setupGatewayUrl" value="ws://127.0.0.1:18789">
+        <input type="hidden" id="setupSessionKey" value="main">
+        
+        <!-- Success state -->
+        <div class="setup-step" id="setupStep2" style="display:none;">
+          <div class="setup-success">
+            <div class="setup-success-icon">✓</div>
+            <div class="setup-success-text">Connected!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- QR Code generator for mobile access -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <!-- Prism.js core + autoloader for syntax highlighting -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+  <!-- Optional: config.js for default settings (gitignored) -->
+  <script src="config.js" onerror="/* config.js is optional */"></script>
+  <script src="app.js"></script>
+</body>
+</html>
