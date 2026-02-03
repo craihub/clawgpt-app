@@ -1448,22 +1448,18 @@ window.CLAWGPT_CONFIG = {
     
     this.relayWs.onerror = (error) => {
       console.error('Relay error:', error);
-      this.showToast('Relay connection error - scan QR to reconnect', true);
-      // Clear saved relay info since it's no longer valid
-      localStorage.removeItem('clawgpt-relay');
+      this.showToast('Relay connection error - will retry...', true);
+      // DON'T clear relay info - room persists, we can reconnect
     };
     
     this.relayWs.onclose = () => {
       console.log('Relay connection closed');
       this.relayWs = null;
       this.relayEncrypted = false;
-      this.setStatus('Disconnected - scan QR to reconnect');
-      // Clear saved relay info since channel is closed
-      localStorage.removeItem('clawgpt-relay');
-      if (this.relayCrypto) {
-        this.relayCrypto.destroy();
-        this.relayCrypto = null;
-      }
+      // DON'T clear relay info or crypto - room persists on server
+      // Phone can reconnect on next app start using saved room ID
+      this.setStatus('Disconnected - reopen app to reconnect');
+      // Note: relayCrypto kept alive so we can reconnect with same identity
     };
   }
   
