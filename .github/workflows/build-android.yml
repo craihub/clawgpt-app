@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Android App Bundle
 
 on:
   push:
@@ -36,15 +36,15 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Build Debug APK
+      - name: Build Release AAB
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew bundleRelease
 
-      - name: Upload APK
+      - name: Upload AAB
         uses: actions/upload-artifact@v4
         with:
-          name: clawgpt-debug
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: clawgpt-release
+          path: android/app/build/outputs/bundle/release/app-release.aab
           retention-days: 30
