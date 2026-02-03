@@ -450,9 +450,11 @@ class ClawGPT {
     if (savedRelay) {
       try {
         const relayInfo = JSON.parse(savedRelay);
-        if (relayInfo.server && relayInfo.channel && relayInfo.pubkey) {
-          console.log('Found saved relay connection, attempting reconnect...');
-          this.joinRelayAsClient(relayInfo);
+        // Support both 'room' (new) and 'channel' (legacy)
+        const roomId = relayInfo.room || relayInfo.channel;
+        if (relayInfo.server && roomId && relayInfo.pubkey) {
+          console.log('Found saved relay connection, attempting reconnect to room:', roomId);
+          this.joinRelayAsClient({ server: relayInfo.server, room: roomId, pubkey: relayInfo.pubkey });
           return;
         }
       } catch (e) {
@@ -610,12 +612,19 @@ class ClawGPT {
     
     // Check for relay connection params (phone joining via QR code)
     const relayServer = urlParams.get('relay');
-    const relayChannel = urlParams.get('channel');
+    const relayRoom = urlParams.get('room');      // New: persistent room
+    const relayChannel = urlParams.get('channel'); // Legacy: ephemeral channel
     const relayPubkey = urlParams.get('pubkey');
     
-    if (relayServer && relayChannel && relayPubkey) {
+    if (relayServer && (relayRoom || relayChannel) && relayPubkey) {
       // Store for later connection after init completes
-      this.pendingRelayJoin = { server: relayServer, channel: relayChannel, pubkey: relayPubkey };
+      // Prefer room (persistent) over channel (ephemeral)
+      this.pendingRelayJoin = { 
+        server: relayServer, 
+        room: relayRoom || relayChannel,  // Use room ID
+        pubkey: relayPubkey,
+        isRoom: !!relayRoom  // Track if using new persistent room
+      };
       // Clean URL
       window.history.replaceState({}, document.title, window.location.pathname);
     }
@@ -1152,6 +1161,21 @@ window.CLAWGPT_CONFIG = {
     this.renderQRCode(qrContainer, placeholder, mobileUrl);
   }
   
+  // Get or generate persistent pairing ID for relay rooms
+  getOrCreatePairingId() {
+    let pairingId = localStorage.getItem('clawgpt-pairing-id');
+    if (!pairingId) {
+      // Generate a random pairing ID (alphanumeric, 16 chars)
+      pairingId = 'cg-' + Array.from(crypto.getRandomValues(new Uint8Array(12)))
+        .map(b => b.toString(36).padStart(2, '0'))
+        .join('')
+        .substring(0, 16);
+      localStorage.setItem('clawgpt-pairing-id', pairingId);
+      console.log('Generated new pairing ID:', pairingId);
+    }
+    return pairingId;
+  }
+  
   async showRelayQR(qrContainer, placeholder, urlDisplay) {
     // Show loading state
     if (urlDisplay) {
@@ -1166,19 +1190,21 @@ window.CLAWGPT_CONFIG = {
       this.relayCrypto = new RelayCrypto();
       const publicKey = this.relayCrypto.getPublicKey();
       
-      // Connect to relay and get channel ID
-      const relayUrl = this.relayServerUrl || 'wss://clawgpt-relay.fly.dev';
-      const channelId = await this.connectToRelay(relayUrl);
+      // Get or create persistent pairing ID
+      const pairingId = this.getOrCreatePairingId();
       
-      // Build mobile URL with relay info + our public key (NOT the auth token!)
-      // The auth token will be sent encrypted after key exchange
-      // Use web URL so it works in both browser and native app (app can intercept via intent filter)
+      // Connect to relay room (persistent - survives reconnection)
+      const relayUrl = this.relayServerUrl || 'wss://clawgpt-relay.fly.dev';
+      await this.connectToRelayRoom(relayUrl, pairingId);
+      
+      // Build mobile URL with pairing ID + our public key
+      // Phone will connect to same room and be able to reconnect later
       const webBase = window.location.origin + window.location.pathname;
-      const mobileUrl = `${webBase}?relay=${encodeURIComponent(relayUrl)}&channel=${channelId}&pubkey=${encodeURIComponent(publicKey)}`;
+      const mobileUrl = `${webBase}?relay=${encodeURIComponent(relayUrl)}&room=${pairingId}&pubkey=${encodeURIComponent(publicKey)}`;
       
       // Update display - show waiting for phone
       if (urlDisplay) {
-        urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay (E2E Encrypted)<br><strong>Channel:</strong> ${channelId}<br><em>Waiting for phone to connect...</em>`;
+        urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay (E2E Encrypted)<br><strong>Room:</strong> ${pairingId}<br><em>Waiting for phone to connect...</em>`;
       }
       
       this.renderQRCode(qrContainer, placeholder, mobileUrl);
@@ -1192,7 +1218,7 @@ window.CLAWGPT_CONFIG = {
     }
   }
   
-  connectToRelay(relayUrl) {
+  connectToRelayRoom(relayUrl, roomId) {
     return new Promise((resolve, reject) => {
       // Close existing relay connection
       if (this.relayWs) {
@@ -1201,14 +1227,16 @@ window.CLAWGPT_CONFIG = {
       
       // Reset encryption state
       this.relayEncrypted = false;
+      this.relayRoomId = roomId;
       
-      const wsUrl = relayUrl.replace(/^http/, 'ws') + '/new';
-      console.log('Connecting to relay:', wsUrl);
+      // Connect to named room (persistent)
+      const wsUrl = relayUrl.replace(/^http/, 'ws') + '/room/' + roomId;
+      console.log('Connecting to relay room:', wsUrl);
       
       this.relayWs = new WebSocket(wsUrl);
       
       this.relayWs.onopen = () => {
-        console.log('Relay connected, waiting for channel ID...');
+        console.log('Relay WebSocket opened, waiting for room join confirmation...');
       };
       
       this.relayWs.onmessage = (event) => {
@@ -1217,12 +1245,22 @@ window.CLAWGPT_CONFIG = {
           
           // Handle relay control messages
           if (msg.type === 'relay') {
-            if (msg.event === 'channel.created') {
-              console.log('Relay channel created:', msg.channelId);
-              this.relayChannelId = msg.channelId;
-              resolve(msg.channelId);
+            if (msg.event === 'room.joined') {
+              console.log('Joined relay room:', msg.roomId, 'as', msg.role);
+              this.relayRole = msg.role;
+              resolve(msg.roomId);
+              
+              // If client is already connected, we'll get key exchange soon
+              if (msg.clientConnected) {
+                console.log('Client already connected, waiting for key exchange...');
+              }
             } else if (msg.event === 'client.connected') {
               console.log('Mobile client connected via relay, waiting for key exchange...');
+            } else if (msg.event === 'host.connected') {
+              console.log('Host reconnected');
+            } else if (msg.event === 'error') {
+              console.error('Relay error:', msg.error);
+              reject(new Error(msg.error));
             }
             return;
           }
@@ -1280,13 +1318,13 @@ window.CLAWGPT_CONFIG = {
   }
   
   // Join relay as client (phone side - scanned QR code)
-  async joinRelayAsClient({ server, channel, pubkey }) {
-    console.log('Joining relay as client:', { server, channel });
+  async joinRelayAsClient({ server, room, pubkey, isRoom = true }) {
+    console.log('Joining relay as client:', { server, room });
     
     this.setStatus('Connecting to relay...');
     
-    // Save relay info for auto-reconnect
-    this.relayInfo = { server, channel, pubkey };
+    // Save relay info for auto-reconnect (persistent rooms survive app restart)
+    this.relayInfo = { server, room, pubkey };
     localStorage.setItem('clawgpt-relay', JSON.stringify(this.relayInfo));
     
     // Initialize crypto
@@ -1304,19 +1342,19 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     
-    // Connect to relay channel
+    // Connect to relay room (persistent) or channel (legacy)
     const wsUrl = server.replace('https://', 'wss://').replace('http://', 'ws://');
-    const channelUrl = `${wsUrl}/channel/${channel}`;
+    const roomUrl = `${wsUrl}/room/${room}`;
     
     try {
-      this.relayWs = new WebSocket(channelUrl);
+      this.relayWs = new WebSocket(roomUrl);
     } catch (e) {
       this.showToast('Failed to connect to relay', true);
       return;
     }
     
     this.relayWs.onopen = () => {
-      console.log('Connected to relay channel as client');
+      console.log('Connected to relay room as client');
       
       // Send our public key to complete key exchange
       this.relayWs.send(JSON.stringify({
@@ -1347,11 +1385,28 @@ window.CLAWGPT_CONFIG = {
         
         // Handle relay control messages
         if (msg.type === 'relay') {
-          if (msg.event === 'channel.joined') {
-            console.log('Joined relay channel:', msg);
+          if (msg.event === 'room.joined' || msg.event === 'channel.joined') {
+            console.log('Joined relay room:', msg);
+            // If host is already connected, we need to do key exchange
+            if (msg.hostConnected) {
+              console.log('Host is connected, sending key exchange...');
+              // Send our public key to complete key exchange
+              this.relayWs.send(JSON.stringify({
+                type: 'keyexchange',
+                publicKey: this.relayCrypto.getPublicKey()
+              }));
+            }
+          } else if (msg.event === 'host.connected') {
+            // Host (re)connected - need to redo key exchange
+            console.log('Host connected, sending key exchange...');
+            this.relayWs.send(JSON.stringify({
+              type: 'keyexchange',
+              publicKey: this.relayCrypto.getPublicKey()
+            }));
           } else if (msg.event === 'host.disconnected') {
-            this.showToast('Desktop disconnected', true);
-            this.setStatus('Host disconnected');
+            this.showToast('Desktop disconnected - will reconnect when desktop is back', true);
+            this.setStatus('Waiting for desktop...');
+            this.relayEncrypted = false; // Need new key exchange when host returns
           } else if (msg.event === 'error') {
             this.showToast(msg.error || 'Relay error', true);
           }
@@ -1837,19 +1892,20 @@ window.CLAWGPT_CONFIG = {
     
     try {
       // Check if it's a relay URL (web URL with relay params)
-      if (data.includes('relay=') && data.includes('channel=') && data.includes('pubkey=')) {
+      // Support both 'room' (new persistent) and 'channel' (legacy ephemeral)
+      if (data.includes('relay=') && (data.includes('room=') || data.includes('channel=')) && data.includes('pubkey=')) {
         const url = new URL(data);
         const relayServer = url.searchParams.get('relay');
-        const channelId = url.searchParams.get('channel');
+        const roomId = url.searchParams.get('room') || url.searchParams.get('channel');
         const publicKey = url.searchParams.get('pubkey');
         
-        if (relayServer && channelId && publicKey) {
+        if (relayServer && roomId && publicKey) {
           // Close setup modal
           const modal = document.getElementById('setupModal');
           if (modal) modal.style.display = 'none';
           
-          // Join relay as client
-          this.joinRelayAsClient({ server: relayServer, channel: channelId, pubkey: publicKey });
+          // Join relay room as client (persistent - auto-reconnects)
+          this.joinRelayAsClient({ server: relayServer, room: roomId, pubkey: publicKey });
           return;
         }
       }
