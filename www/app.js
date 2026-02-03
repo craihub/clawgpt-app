@@ -1654,12 +1654,11 @@ window.CLAWGPT_CONFIG = {
   
   // Show relay client status in UI
   showRelayClientStatus(verifyCode) {
-    // Update status area or show a banner
-    const statusEl = document.getElementById('status');
-    if (statusEl) {
-      statusEl.innerHTML = `<span style="color: var(--accent-color);">Secure</span> <code style="font-size: 0.8em;">${verifyCode}</code>`;
-      statusEl.title = 'Connected via encrypted relay. Verify this code matches your desktop.';
-    }
+    // Store verification code for settings display
+    this.relayVerifyCode = verifyCode;
+    
+    // Update status to just show "Secure" (green)
+    this.setStatus('Secure', true);
   }
   
   handleRelayKeyExchange(peerPublicKey) {
@@ -2571,6 +2570,21 @@ window.CLAWGPT_CONFIG = {
     this.updateSettingsButtons();
     this.updateSettingsForConfigMode();
     this.updateLogCount();
+    this.updateVerifyCodeDisplay();
+  }
+  
+  updateVerifyCodeDisplay() {
+    const el = document.getElementById('verifyCodeDisplay');
+    if (!el) return;
+    
+    if (this.relayEncrypted && this.relayVerifyCode) {
+      el.innerHTML = `Verification: <code style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${this.relayVerifyCode}</code>`;
+      el.title = 'Match these words with your desktop to confirm secure connection';
+    } else if (this.relayInfo) {
+      el.textContent = 'Verification: Connecting...';
+    } else {
+      el.textContent = 'Verification: Not connected via relay';
+    }
   }
   
   updateSettingsForConfigMode() {
