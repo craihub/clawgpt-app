@@ -3124,3 +3124,14 @@ body {
   margin-bottom: 24px;
   color: var(--text-secondary);
 }
+
+/* Scanner active state - hide UI so camera can be seen */
+body.scanner-active {
+  background: transparent !important;
+}
+
+body.scanner-active .app,
+body.scanner-active .modal {
+  display: none !important;
+}
+
