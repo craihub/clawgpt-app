@@ -445,6 +445,22 @@ class ClawGPT {
       return; // Don't auto-connect to gateway - we'll get connection through relay
     }
     
+    // Check for saved relay connection (auto-reconnect on app reopen)
+    const savedRelay = localStorage.getItem('clawgpt-relay');
+    if (savedRelay) {
+      try {
+        const relayInfo = JSON.parse(savedRelay);
+        if (relayInfo.server && relayInfo.channel && relayInfo.pubkey) {
+          console.log('Found saved relay connection, attempting reconnect...');
+          this.joinRelayAsClient(relayInfo);
+          return;
+        }
+      } catch (e) {
+        console.error('Failed to parse saved relay info:', e);
+        localStorage.removeItem('clawgpt-relay');
+      }
+    }
+    
     // Check if we need to show setup wizard
     if (!this.hasConfigFile && !this.authToken) {
       // Try connecting without auth first - many local setups don't require it
@@ -1269,6 +1285,10 @@ window.CLAWGPT_CONFIG = {
     
     this.setStatus('Connecting to relay...');
     
+    // Save relay info for auto-reconnect
+    this.relayInfo = { server, channel, pubkey };
+    localStorage.setItem('clawgpt-relay', JSON.stringify(this.relayInfo));
+    
     // Initialize crypto
     if (typeof RelayCrypto === 'undefined') {
       this.showToast('Relay crypto not available', true);
@@ -1312,7 +1332,7 @@ window.CLAWGPT_CONFIG = {
       console.log('E2E encryption established! Verification:', verifyCode);
       
       this.setStatus('Secure relay connected');
-      this.showToast(`Secure connection! Verify: ${verifyCode}`, 5000);
+      this.showToast(`Secure connection! Verify: ${verifyCode}`);
       
       // Display verification in UI
       this.showRelayClientStatus(verifyCode);
@@ -1355,14 +1375,18 @@ window.CLAWGPT_CONFIG = {
     
     this.relayWs.onerror = (error) => {
       console.error('Relay error:', error);
-      this.showToast('Relay connection error', true);
+      this.showToast('Relay connection error - scan QR to reconnect', true);
+      // Clear saved relay info since it's no longer valid
+      localStorage.removeItem('clawgpt-relay');
     };
     
     this.relayWs.onclose = () => {
       console.log('Relay connection closed');
       this.relayWs = null;
       this.relayEncrypted = false;
-      this.setStatus('Relay disconnected');
+      this.setStatus('Disconnected - scan QR to reconnect');
+      // Clear saved relay info since channel is closed
+      localStorage.removeItem('clawgpt-relay');
       if (this.relayCrypto) {
         this.relayCrypto.destroy();
         this.relayCrypto = null;
@@ -1486,7 +1510,7 @@ window.CLAWGPT_CONFIG = {
       urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay (E2E Encrypted)<br><strong>Verify:</strong> <code style="font-size: 0.95em; background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${verifyCode}</code><br><span style="color: var(--accent-color);">Match these words on your phone</span>`;
     }
     
-    this.showToast(`Secure! Verify: ${verifyCode}`, 5000);
+    this.showToast(`Secure! Verify: ${verifyCode}`);
     
     // Now send the auth token encrypted
     this.sendRelayMessage({
