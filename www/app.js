@@ -836,13 +836,19 @@ class ClawGPT {
         this.gatewayUrl = gatewayUrl;
         this.authToken = authToken;
         this.sessionKey = sessionKey;
-        this.saveSettings();
+        
+        // Force save connection settings (bypass hasConfigFile check for QR setup)
+        const settings = JSON.parse(localStorage.getItem('clawgpt-settings') || '{}');
+        settings.gatewayUrl = gatewayUrl;
+        settings.authToken = authToken;
+        settings.sessionKey = sessionKey;
+        localStorage.setItem('clawgpt-settings', JSON.stringify(settings));
         
         // Close setup modal
         const modal = document.getElementById('setupModal');
         if (modal) modal.classList.remove('open');
         
-        this.showToast('Connecting...');
+        this.showToast('Connecting to ' + gatewayUrl);
         this.autoConnect();
       } else {
         this.showToast('Invalid QR code - missing gateway URL');
@@ -867,13 +873,19 @@ class ClawGPT {
     this.gatewayUrl = gatewayUrl;
     this.authToken = authToken;
     this.sessionKey = sessionKey;
-    this.saveSettings();
+    
+    // Force save connection settings
+    const settings = JSON.parse(localStorage.getItem('clawgpt-settings') || '{}');
+    settings.gatewayUrl = gatewayUrl;
+    settings.authToken = authToken;
+    settings.sessionKey = sessionKey;
+    localStorage.setItem('clawgpt-settings', JSON.stringify(settings));
     
     // Close setup modal
     const modal = document.getElementById('setupModal');
     if (modal) modal.classList.remove('open');
     
-    this.showToast('Connecting...');
+    this.showToast('Connecting to ' + gatewayUrl);
     this.autoConnect();
   }
   
