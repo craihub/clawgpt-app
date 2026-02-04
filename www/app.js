@@ -1094,6 +1094,12 @@ class ClawGPT {
   
   // Check if relay is disconnected and reconnect if needed
   async checkAndReconnectRelay() {
+    // Prevent concurrent reconnection attempts
+    if (this.isReconnecting) {
+      console.log('Reconnection already in progress, skipping');
+      return;
+    }
+    
     // If already connected, do nothing
     if (this.relayWs && this.relayWs.readyState === WebSocket.OPEN && this.relayEncrypted) {
       console.log('Relay already connected');
@@ -1108,6 +1114,7 @@ class ClawGPT {
     }
     
     // Try to reconnect silently
+    this.isReconnecting = true;
     console.log('Auto-reconnecting to relay...');
     this.setStatus('Reconnecting...');
     
@@ -1123,6 +1130,8 @@ class ClawGPT {
     } catch (e) {
       console.error('Auto-reconnect failed:', e);
       this.setStatus('Tap to reconnect');
+    } finally {
+      this.isReconnecting = false;
     }
   }
   
@@ -2323,6 +2332,23 @@ window.CLAWGPT_CONFIG = {
     console.log('Reconnecting to saved relay room:', saved);
     this.setStatus('Reconnecting...');
     
+    // Close any existing connection first to avoid overlapping connections
+    if (this.relayWs) {
+      console.log('Closing existing WebSocket before reconnect');
+      try {
+        this.relayWs.onclose = null;  // Prevent onclose from triggering more reconnects
+        this.relayWs.onerror = null;
+        this.relayWs.onmessage = null;
+        this.relayWs.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+      this.relayWs = null;
+    }
+    
+    // Reset encryption state
+    this.relayEncrypted = false;
+    
     // Initialize crypto - we'll wait for desktop to send key exchange
     if (typeof RelayCrypto === 'undefined') {
       console.error('RelayCrypto not available');
@@ -2440,6 +2466,21 @@ window.CLAWGPT_CONFIG = {
     console.log('Joining relay as client:', { server, channel });
     
     this.setStatus('Connecting to relay...');
+    
+    // Close any existing connection first
+    if (this.relayWs) {
+      console.log('Closing existing WebSocket before joining');
+      try {
+        this.relayWs.onclose = null;
+        this.relayWs.onerror = null;
+        this.relayWs.onmessage = null;
+        this.relayWs.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+      this.relayWs = null;
+    }
+    this.relayEncrypted = false;
     
     // Initialize crypto
     if (typeof RelayCrypto === 'undefined') {
