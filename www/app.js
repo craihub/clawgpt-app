@@ -1840,15 +1840,43 @@ window.CLAWGPT_CONFIG = {
       document.body.classList.remove('scanner-active');
       closeBtn.remove();
       
+      // Debug: log entire result
+      const scanLog = [];
+      scanLog.push('=== QR SCAN RESULT ===');
+      scanLog.push('Result type: ' + typeof result);
+      scanLog.push('Result keys: ' + (result ? Object.keys(result).join(', ') : 'null'));
+      scanLog.push('Result JSON: ' + JSON.stringify(result, null, 2));
+      
+      if (result && result.barcodes) {
+        scanLog.push('Barcodes count: ' + result.barcodes.length);
+        if (result.barcodes.length > 0) {
+          const barcode = result.barcodes[0];
+          scanLog.push('Barcode keys: ' + Object.keys(barcode).join(', '));
+          scanLog.push('rawValue: ' + barcode.rawValue);
+          scanLog.push('displayValue: ' + barcode.displayValue);
+          scanLog.push('format: ' + barcode.format);
+        }
+      }
+      
+      console.log(scanLog.join('\n'));
+      
+      // Store log for copy button
+      window._lastScanLog = scanLog.join('\n');
+      
       if (result.barcodes && result.barcodes.length > 0) {
-        const qrContent = result.barcodes[0].rawValue;
-        console.log('Scanned QR code:', qrContent);
+        const qrContent = result.barcodes[0].rawValue || result.barcodes[0].displayValue || '';
+        scanLog.push('Using qrContent: ' + qrContent);
+        
+        if (!qrContent) {
+          this.showScanDebug(scanLog, 'No QR content found');
+          return;
+        }
         
         // Parse the QR code URL and extract relay params
         try {
           // Clean up the URL - remove any stray spaces that QR scanning might introduce
           const cleanedContent = qrContent.trim().replace(/\s+/g, '');
-          console.log('Cleaned QR content:', cleanedContent);
+          scanLog.push('Cleaned content: ' + cleanedContent);
           
           // Extract params using regex (more robust than URL parsing for malformed URLs)
           const relayMatch = cleanedContent.match(/[?&]relay=([^&]+)/);
@@ -1856,12 +1884,21 @@ window.CLAWGPT_CONFIG = {
           const pubkeyMatch = cleanedContent.match(/[?&]pubkey=([^&]+)/);
           const gatewayMatch = cleanedContent.match(/[?&]gateway=([^&]+)/);
           
+          scanLog.push('relayMatch: ' + (relayMatch ? relayMatch[1] : 'null'));
+          scanLog.push('roomMatch: ' + (roomMatch ? roomMatch[1] : 'null'));
+          scanLog.push('pubkeyMatch: ' + (pubkeyMatch ? 'found' : 'null'));
+          scanLog.push('gatewayMatch: ' + (gatewayMatch ? gatewayMatch[1] : 'null'));
+          
           const relay = relayMatch ? decodeURIComponent(relayMatch[1]) : null;
           const room = roomMatch ? decodeURIComponent(roomMatch[1]) : null;
           const pubkey = pubkeyMatch ? decodeURIComponent(pubkeyMatch[1]) : null;
           const gateway = gatewayMatch ? decodeURIComponent(gatewayMatch[1]) : null;
           
-          console.log('Parsed params - relay:', relay, 'room:', room, 'pubkey:', pubkey ? pubkey.substring(0, 20) + '...' : 'no', 'gateway:', gateway);
+          scanLog.push('Decoded relay: ' + relay);
+          scanLog.push('Decoded room: ' + room);
+          scanLog.push('Decoded pubkey: ' + (pubkey ? pubkey.substring(0, 30) + '...' : 'null'));
+          
+          window._lastScanLog = scanLog.join('\n');
           
           if (relay && room && pubkey) {
             // Join relay room with these params
@@ -1871,12 +1908,17 @@ window.CLAWGPT_CONFIG = {
             // Local network mode - redirect to the URL
             window.location.href = cleanedContent;
           } else {
-            this.showToast('Missing params: ' + (!relay ? 'relay ' : '') + (!room ? 'room ' : '') + (!pubkey ? 'pubkey ' : '') + (!gateway ? 'gateway' : ''), true);
+            this.showScanDebug(scanLog, 'Missing params');
           }
         } catch (e) {
-          console.error('Failed to parse QR code:', e);
-          this.showToast('Invalid QR code', true);
+          scanLog.push('Parse error: ' + e.message);
+          window._lastScanLog = scanLog.join('\n');
+          this.showScanDebug(scanLog, 'Parse error: ' + e.message);
         }
+      } else {
+        scanLog.push('No barcodes in result');
+        window._lastScanLog = scanLog.join('\n');
+        this.showScanDebug(scanLog, 'No barcodes detected');
       }
     } catch (error) {
       console.error('QR scan error:', error);
@@ -1885,6 +1927,46 @@ window.CLAWGPT_CONFIG = {
       if (closeBtn) closeBtn.remove();
       this.showToast('Scan failed: ' + error.message, true);
     }
+  }
+  
+  // Show scan debug dialog with copy button
+  showScanDebug(logLines, errorMsg) {
+    const log = logLines.join('\n');
+    window._lastScanLog = log;
+    
+    // Create debug modal
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:99999;padding:20px;overflow:auto;';
+    modal.innerHTML = `
+      <div style="background:#1a1a1a;border-radius:8px;padding:20px;max-width:600px;margin:0 auto;">
+        <h3 style="color:#e74c3c;margin:0 0 10px;">QR Scan Failed: ${errorMsg}</h3>
+        <pre style="background:#000;color:#0f0;padding:10px;border-radius:4px;overflow:auto;max-height:400px;font-size:11px;white-space:pre-wrap;word-break:break-all;">${log}</pre>
+        <div style="margin-top:15px;display:flex;gap:10px;">
+          <button id="copyLogBtn" style="flex:1;padding:12px;background:#3498db;color:white;border:none;border-radius:4px;font-size:14px;">Copy Log</button>
+          <button id="closeDebugBtn" style="flex:1;padding:12px;background:#666;color:white;border:none;border-radius:4px;font-size:14px;">Close</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    
+    document.getElementById('copyLogBtn').onclick = () => {
+      navigator.clipboard.writeText(log).then(() => {
+        this.showToast('Log copied to clipboard');
+      }).catch(() => {
+        // Fallback for older browsers
+        const textarea = document.createElement('textarea');
+        textarea.value = log;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        this.showToast('Log copied to clipboard');
+      });
+    };
+    
+    document.getElementById('closeDebugBtn').onclick = () => {
+      modal.remove();
+    };
   }
   
   // Connect from manual setup form (mobile)
