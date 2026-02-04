@@ -1903,7 +1903,7 @@ window.CLAWGPT_CONFIG = {
           if (relay && room && pubkey) {
             // Join relay room with these params
             this.showToast('Connecting to desktop...');
-            await this.joinRelayAsClient(relay, room, pubkey);
+            await this.joinRelayAsClient({ server: relay, channel: room, pubkey });
           } else if (gateway) {
             // Local network mode - redirect to the URL
             window.location.href = cleanedContent;
