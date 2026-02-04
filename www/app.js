@@ -2129,7 +2129,15 @@ window.CLAWGPT_CONFIG = {
                 console.log('Client already connected, waiting for key exchange...');
               }
             } else if (msg.event === 'client.connected') {
-              console.log('Mobile client connected via relay, waiting for key exchange...');
+              console.log('Mobile client connected via relay, initiating key exchange...');
+              // Send our public key to initiate key exchange
+              // This handles both fresh QR scans and reconnects
+              if (this.relayCrypto && this.relayWs?.readyState === WebSocket.OPEN) {
+                this.relayWs.send(JSON.stringify({
+                  type: 'keyexchange',
+                  publicKey: this.relayCrypto.getPublicKey()
+                }));
+              }
             } else if (msg.event === 'host.connected') {
               console.log('Host reconnected');
             } else if (msg.event === 'client.disconnected') {
@@ -2419,6 +2427,28 @@ window.CLAWGPT_CONFIG = {
             console.error('Relay server error:', errMsg);
             window._clawgptErrors.push('Relay: ' + errMsg);
             showErrorBanner('Relay: ' + errMsg, false);
+          }
+          return;
+        }
+        
+        // Handle keyexchange from desktop (desktop may send this when we connect)
+        // On fresh QR scan we already have the pubkey, but handle it gracefully
+        if (msg.type === 'keyexchange' && msg.publicKey) {
+          console.log('Received keyexchange from desktop');
+          // If we don't have peer key yet (shouldn't happen on QR scan), set it
+          if (!this.relayEncrypted && this.relayCrypto) {
+            if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
+              this.relayWs.send(JSON.stringify({
+                type: 'keyexchange',
+                publicKey: this.relayCrypto.getPublicKey()
+              }));
+              this.relayEncrypted = true;
+              const verifyCode = this.relayCrypto.getVerificationCode();
+              this.setStatus('Secure relay connected', true);
+              this.showToast(`Secure! Verify: ${verifyCode}`, 5000);
+              this.showRelayClientStatus(verifyCode);
+              this.sendChatSyncMeta();
+            }
           }
           return;
         }
