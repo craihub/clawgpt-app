@@ -1064,6 +1064,66 @@ class ClawGPT {
     } else {
       this.autoConnect();
     }
+    
+    // Set up auto-reconnect on app resume (mobile)
+    this.setupAppStateListener();
+  }
+  
+  // Auto-reconnect when app resumes from background or screen turns on
+  setupAppStateListener() {
+    if (typeof Capacitor === 'undefined' || !Capacitor.Plugins?.App) {
+      return; // Not on mobile
+    }
+    
+    const { App } = Capacitor.Plugins;
+    
+    // Listen for app state changes (foreground/background, screen on/off)
+    App.addListener('appStateChange', ({ isActive }) => {
+      if (isActive) {
+        console.log('App became active, checking relay connection...');
+        this.checkAndReconnectRelay();
+      }
+    });
+    
+    // Also listen for resume event
+    App.addListener('resume', () => {
+      console.log('App resumed, checking relay connection...');
+      this.checkAndReconnectRelay();
+    });
+  }
+  
+  // Check if relay is disconnected and reconnect if needed
+  async checkAndReconnectRelay() {
+    // If already connected, do nothing
+    if (this.relayWs && this.relayWs.readyState === WebSocket.OPEN && this.relayEncrypted) {
+      console.log('Relay already connected');
+      return;
+    }
+    
+    // Check if we have saved relay info
+    const savedRelay = this.getSavedRelayConnection();
+    if (!savedRelay) {
+      console.log('No saved relay connection');
+      return;
+    }
+    
+    // Try to reconnect silently
+    console.log('Auto-reconnecting to relay...');
+    this.setStatus('Reconnecting...');
+    
+    try {
+      const success = await this.reconnectToRelay();
+      if (success) {
+        console.log('Auto-reconnect successful');
+        // Don't show verification words on reconnect - just "Connected"
+        this.setStatus('Connected', true);
+      } else {
+        this.setStatus('Tap to reconnect');
+      }
+    } catch (e) {
+      console.error('Auto-reconnect failed:', e);
+      this.setStatus('Tap to reconnect');
+    }
   }
   
   // Try to connect without auth - returns true if gateway accepts unauthenticated connections
@@ -6462,8 +6522,24 @@ Example: [0, 2, 5]`;
     }, 50);
   }
 
-  scrollToBottom() {
-    this.elements.messages.scrollTop = this.elements.messages.scrollHeight;
+  scrollToBottom(force = false) {
+    // Use requestAnimationFrame to ensure DOM has updated
+    requestAnimationFrame(() => {
+      const el = this.elements.messages;
+      if (!el) return;
+      
+      // Always scroll if forced or if we're streaming
+      if (force || this.streaming) {
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
+      
+      // Otherwise, only auto-scroll if user is already near the bottom
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      if (isNearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
   }
 
   async sendMessage() {
