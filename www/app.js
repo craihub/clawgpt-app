@@ -2597,11 +2597,12 @@ window.CLAWGPT_CONFIG = {
   
   // Show relay client status in UI
   showRelayClientStatus(verifyCode) {
-    // Update status area or show a banner
+    // Update status area - just show "Secure", verification words are in the toast
     const statusEl = document.getElementById('status');
     if (statusEl) {
-      statusEl.innerHTML = `<span style="color: var(--accent-color);">Secure</span> <code style="font-size: 0.8em;">${verifyCode}</code>`;
-      statusEl.title = 'Connected via encrypted relay. Verify this code matches your desktop.';
+      statusEl.textContent = 'Secure';
+      statusEl.classList.add('connected');
+      statusEl.title = `Connected via encrypted relay. Verification: ${verifyCode}`;
     }
   }
   
@@ -3035,6 +3036,17 @@ window.CLAWGPT_CONFIG = {
       saveSettingsBtn.addEventListener('click', () => this.saveAndCloseSettings());
     }
     
+    // Clear logs button
+    const clearLogsBtn = document.getElementById('clearLogsBtn');
+    if (clearLogsBtn) {
+      clearLogsBtn.addEventListener('click', () => {
+        window._clawgptLogs = [];
+        window._clawgptErrors = [];
+        this.updateLogCount();
+        this.showToast('Logs cleared');
+      });
+    }
+    
     // Export/Import buttons
     const exportBtn = document.getElementById('exportChatsBtn');
     const importBtn = document.getElementById('importChatsBtn');
@@ -3433,6 +3445,22 @@ window.CLAWGPT_CONFIG = {
     this.updateSettingsButtons();
     this.updateSettingsForConfigMode();
     this.updateFileMemoryUI();
+    this.updateLogCount();
+  }
+  
+  updateLogCount() {
+    const logCountEl = document.getElementById('logCount');
+    if (logCountEl) {
+      const errorCount = window._clawgptErrors?.length || 0;
+      const logCount = window._clawgptLogs?.length || 0;
+      if (errorCount > 0) {
+        logCountEl.textContent = `Logs: ${logCount} entries, ${errorCount} errors`;
+        logCountEl.style.color = 'var(--error-color, #e74c3c)';
+      } else {
+        logCountEl.textContent = `Logs: ${logCount} entries`;
+        logCountEl.style.color = '';
+      }
+    }
   }
   
   updateSettingsForConfigMode() {
