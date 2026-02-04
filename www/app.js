@@ -2390,12 +2390,9 @@ window.CLAWGPT_CONFIG = {
             const verifyCode = this.relayCrypto.getVerificationCode();
             console.log('E2E encryption re-established! Verification:', verifyCode);
             
-            this.setStatus('Secure relay connected', true);
             this.showToast(`Reconnected! Verify: ${verifyCode}`);
             this.showRelayClientStatus(verifyCode);
-            
-            // Enable send button now that relay is connected
-            this.onInputChange();
+            this.finalizeRelayConnection();
             
             // Sync chats
             this.sendChatSyncMeta();
@@ -2488,6 +2485,14 @@ window.CLAWGPT_CONFIG = {
               publicKey: this.relayCrypto.getPublicKey()
             }));
             this.setStatus('Securing connection...');
+            
+            // Timeout fallback: if no key exchange response in 3s, check if we're already encrypted
+            // (handles race where desktop's keyexchange arrived before room.joined)
+            setTimeout(() => {
+              if (this.relayEncrypted) {
+                this.finalizeRelayConnection();
+              }
+            }, 3000);
           } else if (msg.event === 'host.disconnected') {
             this.showToast('Desktop disconnected', true);
             this.setStatus('Host disconnected');
@@ -2514,19 +2519,9 @@ window.CLAWGPT_CONFIG = {
           const verifyCode = this.relayCrypto.getVerificationCode();
           console.log('E2E encryption established! Verification:', verifyCode);
           
-          this.setStatus('Connected', true);
           this.showToast(`Secure! Verify: ${verifyCode}`);
           this.showRelayClientStatus(verifyCode);
-          
-          // Close the setup modal
-          const setupModal = document.getElementById('setupModal');
-          if (setupModal) {
-            setupModal.classList.remove('open');
-            setupModal.style.display = 'none';
-          }
-          
-          // Enable send button now that relay is connected
-          this.onInputChange();
+          this.finalizeRelayConnection();
           
           // Start sync after encryption confirmed
           this.sendChatSyncMeta();
@@ -2553,19 +2548,9 @@ window.CLAWGPT_CONFIG = {
               const verifyCode = this.relayCrypto.getVerificationCode();
               console.log('E2E encryption established! Verification:', verifyCode);
               
-              this.setStatus('Connected', true);
               this.showToast(`Secure! Verify: ${verifyCode}`);
               this.showRelayClientStatus(verifyCode);
-              
-              // Close setup modal
-              const setupModal = document.getElementById('setupModal');
-              if (setupModal) {
-                setupModal.classList.remove('open');
-                setupModal.style.display = 'none';
-              }
-              
-              // Enable send button now that relay is connected
-              this.onInputChange();
+              this.finalizeRelayConnection();
               
               this.sendChatSyncMeta();
             }
@@ -2680,6 +2665,7 @@ window.CLAWGPT_CONFIG = {
     // Update UI
     this.renderChatList();
     this.renderMessages();
+    this.scrollToBottom(true);  // Force scroll when loading state
   }
   
   // Connect to gateway through relay (phone side)
@@ -2730,6 +2716,33 @@ window.CLAWGPT_CONFIG = {
       statusEl.textContent = 'Secure';
       statusEl.classList.add('connected');
       statusEl.title = `Connected via encrypted relay. Verification: ${verifyCode}`;
+    }
+  }
+  
+  // Ensure relay connection is finalized (modal closed, sync started)
+  // Called after encryption established to handle any race conditions
+  finalizeRelayConnection() {
+    if (!this.relayEncrypted) return;
+    
+    // Make sure status shows connected
+    this.setStatus('Connected', true);
+    
+    // Make sure setup modal is closed
+    const setupModal = document.getElementById('setupModal');
+    if (setupModal && (setupModal.classList.contains('open') || setupModal.style.display !== 'none')) {
+      console.log('Finalizing: closing setup modal');
+      setupModal.classList.remove('open');
+      setupModal.style.display = 'none';
+    }
+    
+    // Enable send button
+    this.onInputChange();
+    
+    // Request state if we don't have chats yet
+    if (!this.relayStateReceived && Object.keys(this.chats).length === 0) {
+      console.log('Finalizing: requesting state from desktop');
+      this.relayStateReceived = true;
+      this.sendRelayMessage({ type: 'request-state' });
     }
   }
   
@@ -3113,6 +3126,7 @@ window.CLAWGPT_CONFIG = {
     this.saveChats();
     this.renderChatList();
     this.renderMessages();
+    this.scrollToBottom(true);
     
     // Send to gateway
     this.sendMessage(content);
@@ -4769,6 +4783,7 @@ Example: [0, 2, 5]`;
     
     this.currentChatId = chatId;
     this.renderMessages();
+    this.scrollToBottom(true);  // Force scroll to bottom when switching chats
     this.renderChatList();
     this.updateTokenDisplay(); // Also updates model display
     this.elements.sidebar.classList.remove('open');
@@ -5856,6 +5871,13 @@ Example: [0, 2, 5]`;
       e.preventDefault();
       this.stopPushToTalkAndSend(voiceBtn);
     });
+    
+    // Handle mouse leaving button while held - treat as release
+    voiceBtn.addEventListener('mouseleave', (e) => {
+      if (this.isRecording) {
+        this.stopPushToTalkAndSend(voiceBtn);
+      }
+    });
   }
   
   async startPushToTalk(voiceBtn) {
@@ -5863,6 +5885,7 @@ Example: [0, 2, 5]`;
     
     try {
       this.isRecording = true;
+      this.speechStarted = false;  // Track if speech recognition actually started
       voiceBtn.classList.add('recording');
       this.elements.messageInput.placeholder = 'Listening...';
       
@@ -5871,26 +5894,58 @@ Example: [0, 2, 5]`;
         partialResults: true,
         popup: false
       });
+      this.speechStarted = true;  // Mark that we successfully started
+      
+      // Safety timeout: if held for more than 30s, auto-stop
+      this.pttTimeout = setTimeout(() => {
+        if (this.isRecording) {
+          console.log('PTT timeout - auto-stopping');
+          this.stopPushToTalkAndSend(voiceBtn);
+        }
+      }, 30000);
     } catch (e) {
       console.error('Start recording error:', e);
-      this.isRecording = false;
-      voiceBtn.classList.remove('recording');
-      this.elements.messageInput.placeholder = 'Message ClawGPT...';
+      this.resetPushToTalkState(voiceBtn);
       this.showToast('Voice input error: ' + e.message, true);
     }
   }
   
+  resetPushToTalkState(voiceBtn) {
+    this.isRecording = false;
+    this.speechStarted = false;
+    if (this.pttTimeout) {
+      clearTimeout(this.pttTimeout);
+      this.pttTimeout = null;
+    }
+    voiceBtn.classList.remove('recording');
+    this.elements.messageInput.placeholder = 'Message ClawGPT...';
+  }
+  
   async stopPushToTalkAndSend(voiceBtn) {
-    if (!this.mobileSpeech || !this.isRecording) return;
+    // Always reset state, even if we think we're not recording
+    // (handles edge cases where state got out of sync)
+    if (!this.mobileSpeech) {
+      this.resetPushToTalkState(voiceBtn);
+      return;
+    }
+    
+    // If not recording, just make sure UI is reset
+    if (!this.isRecording) {
+      this.resetPushToTalkState(voiceBtn);
+      return;
+    }
     
     try {
-      const result = await this.mobileSpeech.stop();
-      this.isRecording = false;
-      voiceBtn.classList.remove('recording');
-      this.elements.messageInput.placeholder = 'Message ClawGPT...';
+      // Only try to stop if speech actually started
+      let result = null;
+      if (this.speechStarted) {
+        result = await this.mobileSpeech.stop();
+      }
+      
+      this.resetPushToTalkState(voiceBtn);
       
       // If we got a transcript, put it in the input and send
-      if (result.matches && result.matches.length > 0) {
+      if (result && result.matches && result.matches.length > 0) {
         const transcript = result.matches[0].trim();
         if (transcript) {
           this.elements.messageInput.value = transcript;
@@ -5901,9 +5956,13 @@ Example: [0, 2, 5]`;
       }
     } catch (e) {
       console.error('Stop recording error:', e);
-      this.isRecording = false;
-      voiceBtn.classList.remove('recording');
-      this.elements.messageInput.placeholder = 'Message ClawGPT...';
+      this.resetPushToTalkState(voiceBtn);
+      // Try to force-stop in case it's stuck
+      try {
+        await this.mobileSpeech.stop();
+      } catch (e2) {
+        // Ignore secondary error
+      }
     }
   }
   
