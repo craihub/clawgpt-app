@@ -1793,6 +1793,88 @@ window.CLAWGPT_CONFIG = {
     return pairingId;
   }
   
+  // Scan QR code on mobile using MLKit barcode scanner
+  async scanQRCode() {
+    try {
+      // Check if Capacitor and the barcode scanner plugin are available
+      if (typeof Capacitor === 'undefined' || !Capacitor.isNativePlatform()) {
+        this.showToast('QR scanning only works on mobile', true);
+        return;
+      }
+      
+      const { BarcodeScanner } = Capacitor.Plugins;
+      if (!BarcodeScanner) {
+        this.showToast('Barcode scanner not available', true);
+        return;
+      }
+      
+      // Check/request camera permission
+      const permStatus = await BarcodeScanner.checkPermissions();
+      if (permStatus.camera !== 'granted') {
+        const reqStatus = await BarcodeScanner.requestPermissions();
+        if (reqStatus.camera !== 'granted') {
+          this.showToast('Camera permission required to scan QR codes', true);
+          return;
+        }
+      }
+      
+      // Hide the UI to show camera preview
+      document.body.classList.add('scanner-active');
+      
+      // Add a close button for the scanner
+      const closeBtn = document.createElement('button');
+      closeBtn.id = 'scanner-close-btn';
+      closeBtn.innerHTML = '✕ Cancel';
+      closeBtn.style.cssText = 'position:fixed;top:20px;right:20px;z-index:99999;background:#333;color:white;border:none;padding:12px 20px;border-radius:8px;font-size:16px;';
+      closeBtn.onclick = async () => {
+        await BarcodeScanner.stopScan();
+        document.body.classList.remove('scanner-active');
+        closeBtn.remove();
+      };
+      document.body.appendChild(closeBtn);
+      
+      // Start scanning
+      const result = await BarcodeScanner.scan();
+      
+      // Clean up
+      document.body.classList.remove('scanner-active');
+      closeBtn.remove();
+      
+      if (result.barcodes && result.barcodes.length > 0) {
+        const qrContent = result.barcodes[0].rawValue;
+        console.log('Scanned QR code:', qrContent);
+        
+        // Parse the QR code URL and extract relay params
+        try {
+          const url = new URL(qrContent);
+          const relay = url.searchParams.get('relay');
+          const room = url.searchParams.get('room');
+          const pubkey = url.searchParams.get('pubkey');
+          
+          if (relay && room && pubkey) {
+            // Join relay room with these params
+            this.showToast('Connecting to desktop...');
+            await this.joinRelayAsClient(relay, room, pubkey);
+          } else if (url.searchParams.get('gateway')) {
+            // Local network mode - redirect to the URL
+            window.location.href = qrContent;
+          } else {
+            this.showToast('Invalid QR code format', true);
+          }
+        } catch (e) {
+          console.error('Failed to parse QR code:', e);
+          this.showToast('Invalid QR code', true);
+        }
+      }
+    } catch (error) {
+      console.error('QR scan error:', error);
+      document.body.classList.remove('scanner-active');
+      const closeBtn = document.getElementById('scanner-close-btn');
+      if (closeBtn) closeBtn.remove();
+      this.showToast('Scan failed: ' + error.message, true);
+    }
+  }
+  
   connectToRelayRoom(relayUrl, roomId) {
     return new Promise((resolve, reject) => {
       // Close existing relay connection
@@ -2556,6 +2638,12 @@ window.CLAWGPT_CONFIG = {
     const showQrBtn = document.getElementById('showQrBtn');
     if (showQrBtn) {
       showQrBtn.addEventListener('click', () => this.showMobileQR());
+    }
+    
+    // QR Code scanning (mobile - scan desktop QR)
+    const scanQrBtn = document.getElementById('scanQrBtn');
+    if (scanQrBtn) {
+      scanQrBtn.addEventListener('click', () => this.scanQRCode());
     }
     
     this.elements.menuBtn.addEventListener('click', () => this.toggleSidebar());
