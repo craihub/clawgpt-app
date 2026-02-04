@@ -6211,6 +6211,7 @@ Example: [0, 2, 5]`;
     console.log('Exiting voice chat mode');
     this.voiceChatActive = false;
     this.voiceChatState = null;
+    this.voiceChatPendingResponse = false;
     
     // Stop any ongoing speech recognition
     if (this.mobileSpeech) {
@@ -6227,6 +6228,9 @@ Example: [0, 2, 5]`;
       clearTimeout(this.silenceTimeout);
       this.silenceTimeout = null;
     }
+    
+    // Clear voice chat checks
+    this.clearVoiceChatChecks();
     
     // Remove overlay
     this.hideVoiceChatOverlay();
@@ -6400,6 +6404,16 @@ Example: [0, 2, 5]`;
     
     console.log('Voice chat: sending message:', message);
     
+    // Set up a fallback check - if still processing after 5 seconds, check for response
+    this.voiceChatProcessingTimeout = setTimeout(() => {
+      this.checkForVoiceChatResponse();
+    }, 5000);
+    
+    // Also check periodically
+    this.voiceChatCheckInterval = setInterval(() => {
+      this.checkForVoiceChatResponse();
+    }, 2000);
+    
     // Send via relay (same as regular messages)
     if (this.relayEncrypted && this.relayWs) {
       // Store callback to handle response
@@ -6509,9 +6523,60 @@ Example: [0, 2, 5]`;
     }
   }
   
+  // Check if there's a response we missed while in PROCESSING state
+  checkForVoiceChatResponse() {
+    if (!this.voiceChatActive || this.voiceChatState !== 'PROCESSING') {
+      this.clearVoiceChatChecks();
+      return;
+    }
+    
+    console.log('Voice chat: checking for missed response...');
+    
+    // Check if there's an assistant message we haven't spoken yet
+    const chat = this.chats[this.currentChatId];
+    if (chat && chat.messages && chat.messages.length > 0) {
+      // Find the last assistant message
+      for (let i = chat.messages.length - 1; i >= 0; i--) {
+        const msg = chat.messages[i];
+        if (msg.role === 'assistant' && msg.content) {
+          console.log('Voice chat: found assistant message to speak');
+          this.handleVoiceChatResponse(msg.content);
+          return;
+        }
+        if (msg.role === 'user') {
+          // Don't look past the last user message
+          break;
+        }
+      }
+    }
+    
+    // Also check if streaming just finished and there's content
+    if (!this.streaming && this.streamBuffer) {
+      console.log('Voice chat: found stream buffer content');
+      this.handleVoiceChatResponse(this.streamBuffer);
+    }
+  }
+  
+  clearVoiceChatChecks() {
+    if (this.voiceChatProcessingTimeout) {
+      clearTimeout(this.voiceChatProcessingTimeout);
+      this.voiceChatProcessingTimeout = null;
+    }
+    if (this.voiceChatCheckInterval) {
+      clearInterval(this.voiceChatCheckInterval);
+      this.voiceChatCheckInterval = null;
+    }
+  }
+  
   // Called when we receive a response from the relay
   handleVoiceChatResponse(content) {
-    if (!this.voiceChatActive || !this.voiceChatPendingResponse) return;
+    if (!this.voiceChatActive) return;
+    
+    // Clear the checking interval
+    this.clearVoiceChatChecks();
+    
+    // Only process if we're still waiting for a response
+    if (!this.voiceChatPendingResponse && this.voiceChatState !== 'PROCESSING') return;
     
     this.voiceChatPendingResponse = false;
     
