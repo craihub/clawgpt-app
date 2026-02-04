@@ -1020,6 +1020,17 @@ class ClawGPT {
       return; // Don't auto-connect to gateway - we'll get connection through relay
     }
     
+    // Check if we have a saved relay connection (phone reconnecting after app restart)
+    const savedRelay = this.getSavedRelayConnection();
+    if (savedRelay) {
+      console.log('Found saved relay connection, reconnecting...');
+      const reconnected = await this.reconnectToRelay();
+      if (reconnected) {
+        return; // Don't show setup wizard - we're reconnecting via relay
+      }
+      // If reconnect failed, fall through to setup wizard
+    }
+    
     // Check if we need to show setup wizard
     if (!this.hasConfigFile && !this.authToken) {
       // Try connecting without auth first - many local setups don't require it
@@ -2185,6 +2196,145 @@ window.CLAWGPT_CONFIG = {
     });
   }
   
+  // Save relay connection info for auto-reconnect
+  saveRelayConnection(server, roomId) {
+    localStorage.setItem('clawgpt-relay-server', server);
+    localStorage.setItem('clawgpt-relay-room', roomId);
+    console.log('Saved relay connection:', { server, roomId });
+  }
+  
+  // Get saved relay connection info
+  getSavedRelayConnection() {
+    const server = localStorage.getItem('clawgpt-relay-server');
+    const roomId = localStorage.getItem('clawgpt-relay-room');
+    if (server && roomId) {
+      return { server, roomId };
+    }
+    return null;
+  }
+  
+  // Clear saved relay connection
+  clearRelayConnection() {
+    localStorage.removeItem('clawgpt-relay-server');
+    localStorage.removeItem('clawgpt-relay-room');
+  }
+  
+  // Reconnect to saved relay room (on app restart)
+  async reconnectToRelay() {
+    const saved = this.getSavedRelayConnection();
+    if (!saved) return false;
+    
+    console.log('Reconnecting to saved relay room:', saved);
+    this.setStatus('Reconnecting...');
+    
+    // Initialize crypto - we'll wait for desktop to send key exchange
+    if (typeof RelayCrypto === 'undefined') {
+      console.error('RelayCrypto not available');
+      return false;
+    }
+    
+    this.relayCrypto = new RelayCrypto();
+    this.relayCrypto.generateKeyPair();
+    
+    const wsUrl = saved.server.replace('https://', 'wss://').replace('http://', 'ws://');
+    const roomUrl = `${wsUrl}/room/${saved.roomId}`;
+    
+    try {
+      this.relayWs = new WebSocket(roomUrl);
+    } catch (e) {
+      console.error('Failed to reconnect to relay:', e);
+      this.setStatus('Reconnect failed');
+      return false;
+    }
+    
+    this.relayWs.onopen = () => {
+      console.log('Reconnected to relay room, waiting for desktop...');
+      this.setStatus('Waiting for desktop...');
+      
+      // Close setup modal if open
+      const setupModal = document.getElementById('setupModal');
+      if (setupModal) {
+        setupModal.classList.remove('open');
+        setupModal.style.display = 'none';
+      }
+    };
+    
+    this.relayWs.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        
+        // Handle relay control messages
+        if (msg.type === 'relay') {
+          if (msg.event === 'room.joined') {
+            console.log('Joined relay room:', msg);
+            // We're in the room, waiting for desktop to connect and send keyexchange
+          } else if (msg.event === 'peer.joined') {
+            console.log('Desktop connected to room');
+            this.setStatus('Desktop connected, securing...');
+          } else if (msg.event === 'host.disconnected' || msg.event === 'peer.left') {
+            this.setStatus('Waiting for desktop...');
+          } else if (msg.event === 'error') {
+            console.error('Relay error:', msg.error);
+            this.setStatus('Relay error');
+          }
+          return;
+        }
+        
+        // Handle keyexchange from desktop (desktop initiates after reconnect)
+        if (msg.type === 'keyexchange') {
+          console.log('Received keyexchange from desktop');
+          if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
+            // Send our public key back
+            this.relayWs.send(JSON.stringify({
+              type: 'keyexchange',
+              publicKey: this.relayCrypto.getPublicKey()
+            }));
+            
+            this.relayEncrypted = true;
+            const verifyCode = this.relayCrypto.getVerificationCode();
+            console.log('E2E encryption re-established! Verification:', verifyCode);
+            
+            this.setStatus('Secure relay connected', true);
+            this.showToast(`Reconnected! Verify: ${verifyCode}`, 5000);
+            this.showRelayClientStatus(verifyCode);
+            
+            // Sync chats
+            this.sendChatSyncMeta();
+          }
+          return;
+        }
+        
+        // Handle encrypted messages
+        if (msg.type === 'encrypted' && this.relayEncrypted) {
+          const decrypted = this.relayCrypto.openEnvelope(msg);
+          if (decrypted) {
+            this.handleRelayClientMessage(decrypted);
+          }
+          return;
+        }
+      } catch (e) {
+        console.error('Relay message error:', e);
+      }
+    };
+    
+    this.relayWs.onerror = (error) => {
+      console.error('Relay reconnect error:', error);
+      this.setStatus('Connection error');
+    };
+    
+    this.relayWs.onclose = (event) => {
+      console.log('Relay connection closed:', event.code, event.reason);
+      this.relayEncrypted = false;
+      if (event.reason) {
+        this.setStatus(`Disconnected: ${event.reason}`);
+      } else {
+        this.setStatus('Disconnected');
+      }
+    };
+    
+    return true;
+  }
+  
   // Join relay as client (phone side - scanned QR code)
   async joinRelayAsClient({ server, channel, pubkey }) {
     console.log('Joining relay as client:', { server, channel });
@@ -2205,6 +2355,9 @@ window.CLAWGPT_CONFIG = {
       this.showToast('Invalid host public key', true);
       return;
     }
+    
+    // Save relay connection for auto-reconnect on app restart
+    this.saveRelayConnection(server, channel);
     
     // Connect to relay room (persistent rooms, not ephemeral channels)
     const wsUrl = server.replace('https://', 'wss://').replace('http://', 'ws://');
@@ -2342,12 +2495,9 @@ window.CLAWGPT_CONFIG = {
     // Handle auth info from desktop (gateway URL + token)
     if (msg.type === 'auth') {
       console.log('Received gateway auth from desktop');
-      // Store in memory only - don't persist to localStorage
-      // The phone can't reach the gateway directly, it must always use relay
-      // On next app open, it will show the QR scan screen again
       this.gatewayUrl = msg.gatewayUrl;
       this.authToken = msg.token;
-      // DON'T call saveSettings() - we don't want to persist relay-received credentials
+      this.saveSettings();
       
       // Now connect to gateway through the desktop (relay forwards our messages)
       this.connectViaRelay();
@@ -2942,6 +3092,8 @@ window.CLAWGPT_CONFIG = {
           // Clear connection-related localStorage items
           localStorage.removeItem('clawgpt-settings');
           localStorage.removeItem('clawgpt-pairing-id');
+          localStorage.removeItem('clawgpt-relay-server');
+          localStorage.removeItem('clawgpt-relay-room');
           
           // Clear memory
           this.gatewayUrl = 'ws://127.0.0.1:18789';
