@@ -4570,6 +4570,38 @@ Example: [0, 2, 5]`;
     if (!this.elements.status) return;
     this.elements.status.textContent = text;
     this.elements.status.classList.toggle('connected', isConnected);
+    
+    // Add tap-to-reconnect on mobile when disconnected
+    if (!isConnected && this.isMobile && !this._statusClickBound) {
+      this._statusClickBound = true;
+      this.elements.status.style.cursor = 'pointer';
+      this.elements.status.addEventListener('click', () => this.handleStatusTap());
+    }
+  }
+  
+  // Handle tap on status to reconnect
+  async handleStatusTap() {
+    // Only try to reconnect if we're disconnected
+    if (this.relayEncrypted && this.relayWs?.readyState === WebSocket.OPEN) {
+      this.showToast('Already connected');
+      return;
+    }
+    
+    // Try to reconnect
+    this.showToast('Reconnecting...');
+    
+    // Check if we have saved relay info
+    const savedRelay = this.getSavedRelayConnection();
+    if (savedRelay) {
+      const success = await this.reconnectToRelay();
+      if (success) {
+        this.showToast('Reconnected!');
+      } else {
+        this.showToast('Reconnect failed - try scanning QR again', true);
+      }
+    } else {
+      this.showToast('No saved connection - scan QR code to connect', true);
+    }
   }
 
   // Chat functionality
@@ -5620,7 +5652,13 @@ Example: [0, 2, 5]`;
     const voiceBtn = document.getElementById('voiceBtn');
     if (!voiceBtn) return;
     
-    // Check for browser support
+    // Check if we're on mobile with Capacitor
+    if (this.isMobile && typeof Capacitor !== 'undefined' && Capacitor.Plugins?.SpeechRecognition) {
+      this.initMobileVoiceInput(voiceBtn);
+      return;
+    }
+    
+    // Fallback to browser Web Speech API
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
       voiceBtn.classList.add('unsupported');
@@ -5691,6 +5729,92 @@ Example: [0, 2, 5]`;
     };
     
     voiceBtn.addEventListener('click', () => this.toggleVoiceInput());
+  }
+  
+  // Mobile voice input using Capacitor Speech Recognition plugin
+  async initMobileVoiceInput(voiceBtn) {
+    const { SpeechRecognition } = Capacitor.Plugins;
+    
+    this.mobileSpeech = SpeechRecognition;
+    this.isRecording = false;
+    
+    // Check/request permission
+    try {
+      const { available } = await SpeechRecognition.available();
+      if (!available) {
+        voiceBtn.classList.add('unsupported');
+        voiceBtn.title = 'Speech recognition not available';
+        return;
+      }
+      
+      const permResult = await SpeechRecognition.checkPermissions();
+      if (permResult.speechRecognition !== 'granted') {
+        const requestResult = await SpeechRecognition.requestPermissions();
+        if (requestResult.speechRecognition !== 'granted') {
+          voiceBtn.classList.add('unsupported');
+          voiceBtn.title = 'Microphone permission denied';
+          return;
+        }
+      }
+    } catch (e) {
+      console.error('Speech recognition init error:', e);
+      voiceBtn.classList.add('unsupported');
+      return;
+    }
+    
+    // Listen for results
+    SpeechRecognition.addListener('partialResults', (data) => {
+      if (data.matches && data.matches.length > 0) {
+        this.elements.messageInput.placeholder = data.matches[0] + '...';
+      }
+    });
+    
+    voiceBtn.addEventListener('click', () => this.toggleMobileVoiceInput(voiceBtn));
+  }
+  
+  async toggleMobileVoiceInput(voiceBtn) {
+    if (!this.mobileSpeech) return;
+    
+    if (this.isRecording) {
+      // Stop recording
+      try {
+        const result = await this.mobileSpeech.stop();
+        this.isRecording = false;
+        voiceBtn.classList.remove('recording');
+        this.elements.messageInput.placeholder = 'Message ClawGPT...';
+        
+        // Append result to input
+        if (result.matches && result.matches.length > 0) {
+          const transcript = result.matches[0];
+          const input = this.elements.messageInput;
+          const needsSpace = input.value && !input.value.endsWith(' ');
+          input.value += (needsSpace ? ' ' : '') + transcript;
+          this.onInputChange();
+          input.focus();
+        }
+      } catch (e) {
+        console.error('Stop recording error:', e);
+        this.isRecording = false;
+        voiceBtn.classList.remove('recording');
+      }
+    } else {
+      // Start recording
+      try {
+        this.isRecording = true;
+        voiceBtn.classList.add('recording');
+        
+        await this.mobileSpeech.start({
+          language: navigator.language || 'en-US',
+          partialResults: true,
+          popup: false
+        });
+      } catch (e) {
+        console.error('Start recording error:', e);
+        this.isRecording = false;
+        voiceBtn.classList.remove('recording');
+        this.showToast('Voice input error: ' + e.message, true);
+      }
+    }
   }
   
   toggleVoiceInput() {
