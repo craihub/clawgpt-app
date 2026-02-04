@@ -2610,7 +2610,7 @@ window.CLAWGPT_CONFIG = {
     
     // Update UI
     this.renderChatList();
-    this.renderChat();
+    this.renderMessages();
   }
   
   // Connect to gateway through relay (phone side)
@@ -3033,7 +3033,7 @@ window.CLAWGPT_CONFIG = {
     this.currentChatId = chatId;
     this.saveChats();
     this.renderChatList();
-    this.renderChat();
+    this.renderMessages();
     
     // Send to gateway
     this.sendMessage(content);
