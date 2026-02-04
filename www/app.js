@@ -2397,6 +2397,11 @@ window.CLAWGPT_CONFIG = {
           } else if (msg.event === 'host.disconnected') {
             this.showToast('Desktop disconnected', true);
             this.setStatus('Host disconnected');
+            this.relayEncrypted = false; // Reset so we can re-establish encryption
+          } else if (msg.event === 'host.connected') {
+            console.log('Host reconnected, ready for key exchange');
+            this.setStatus('Reconnecting...');
+            this.relayEncrypted = false; // Reset for fresh key exchange
           } else if (msg.event === 'error') {
             const errMsg = msg.error || 'Relay error';
             console.error('Relay server error:', errMsg);
@@ -2434,8 +2439,13 @@ window.CLAWGPT_CONFIG = {
         // Handle keyexchange from desktop (desktop initiates on reconnect)
         if (msg.type === 'keyexchange' && msg.publicKey) {
           console.log('Received keyexchange from desktop (desktop-initiated)');
-          if (!this.relayEncrypted && this.relayCrypto) {
-            // This happens when desktop initiates (e.g., on reconnect)
+          // Always accept new key exchange (handles reconnection case)
+          if (this.relayCrypto) {
+            // Generate fresh keypair for forward secrecy on reconnect
+            if (this.relayEncrypted) {
+              console.log('Re-keying for reconnection...');
+              this.relayCrypto.generateKeyPair();
+            }
             if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
               // Respond with our key
               this.relayWs.send(JSON.stringify({
@@ -3028,6 +3038,43 @@ window.CLAWGPT_CONFIG = {
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
     if (saveSettingsBtn) {
       saveSettingsBtn.addEventListener('click', () => this.saveAndCloseSettings());
+    }
+    
+    // Copy logs button (in settings modal)
+    const copyLogsBtn = document.getElementById('copyLogsBtn');
+    if (copyLogsBtn) {
+      copyLogsBtn.addEventListener('click', () => {
+        const fullLog = [
+          '=== ClawGPT Debug Log ===',
+          'Time: ' + new Date().toISOString(),
+          'UserAgent: ' + navigator.userAgent,
+          'Platform: ' + (navigator.platform || 'unknown'),
+          'URL: ' + window.location.href,
+          '',
+          '=== Errors ===',
+          ...(window._clawgptErrors || ['(none)']),
+          '',
+          '=== Recent Logs ===',
+          ...(window._clawgptLogs || ['(none)']).slice(-100)
+        ].join('\n');
+        
+        navigator.clipboard.writeText(fullLog).then(() => {
+          copyLogsBtn.textContent = 'Copied!';
+          setTimeout(() => copyLogsBtn.textContent = 'Copy Logs', 2000);
+        }).catch(() => {
+          // Fallback for mobile
+          const ta = document.createElement('textarea');
+          ta.value = fullLog;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          copyLogsBtn.textContent = 'Copied!';
+          setTimeout(() => copyLogsBtn.textContent = 'Copy Logs', 2000);
+        });
+      });
     }
     
     // Clear logs button
