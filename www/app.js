@@ -2558,7 +2558,8 @@ window.CLAWGPT_CONFIG = {
   // Connect to gateway through relay (phone side)
   connectViaRelay() {
     console.log('Connecting to gateway via relay proxy...');
-    this.setStatus('Connecting...');
+    // Don't overwrite status - we're already showing "Connected" from relay connection
+    // The relay IS the secure connection; gateway auth happens through it
     
     // The phone sends messages to relay, desktop forwards to gateway
     // We'll use the relay as our "WebSocket" to gateway
