@@ -2871,6 +2871,16 @@ window.CLAWGPT_CONFIG = {
   }
   
   handleChatUpdate(msg) {
+    // Handle streaming updates from desktop
+    if (msg.streaming && msg.chatId) {
+      this.streamBuffer = msg.content || '';
+      this.streaming = true;
+      this.currentChatId = msg.chatId;
+      this.updateStreamingUI();
+      this.renderMessages();
+      return;
+    }
+    
     // NEW SIMPLIFIED FORMAT: single message update
     if (msg.chatId && msg.message) {
       const chatId = msg.chatId;
