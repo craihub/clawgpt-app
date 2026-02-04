@@ -5983,50 +5983,41 @@ Example: [0, 2, 5]`;
       return;
     }
     
-    try {
-      // Only try to stop if speech actually started
-      let result = null;
-      if (this.speechStarted) {
-        console.log('Stopping speech recognition...');
-        result = await this.mobileSpeech.stop();
-        console.log('Stop result:', JSON.stringify(result));
-      } else {
-        console.log('Speech never started, skipping stop');
-      }
-      
-      this.resetPushToTalkState(voiceBtn);
-      
-      // Get transcript from result, or fall back to last partial result
-      let transcript = '';
-      if (result && result.matches && result.matches.length > 0) {
-        transcript = result.matches[0].trim();
-        console.log('Got transcript from stop():', transcript);
-      } else if (this.lastPartialResult) {
-        transcript = this.lastPartialResult.trim();
-        console.log('Using last partial result as fallback:', transcript);
-      } else {
-        console.log('No transcript available');
-      }
-      
-      // Clear the fallback for next time
-      this.lastPartialResult = '';
-      
-      // If we got a transcript, put it in the input and send
-      if (transcript) {
-        this.elements.messageInput.value = transcript;
-        this.onInputChange();
-        // Auto-send the message
-        this.sendMessage();
-      }
-    } catch (e) {
-      console.error('Stop recording error:', e);
-      this.resetPushToTalkState(voiceBtn);
-      // Try to force-stop in case it's stuck
-      try {
-        await this.mobileSpeech.stop();
-      } catch (e2) {
-        // Ignore secondary error
-      }
+    // Capture the transcript FIRST from partial results (stop() often hangs)
+    const transcript = (this.lastPartialResult || '').trim();
+    console.log('Captured transcript from partial results:', transcript);
+    
+    // Clear for next time
+    this.lastPartialResult = '';
+    
+    // Reset UI state immediately so button doesn't stay stuck
+    this.resetPushToTalkState(voiceBtn);
+    
+    // Try to stop speech recognition (with timeout since it often hangs)
+    if (this.speechStarted) {
+      console.log('Stopping speech recognition (fire and forget)...');
+      // Don't await - just fire and forget with a timeout
+      const stopPromise = this.mobileSpeech.stop().catch(e => {
+        console.log('Stop error (ignored):', e.message);
+      });
+      // Set a timeout to abort waiting
+      Promise.race([
+        stopPromise,
+        new Promise(resolve => setTimeout(resolve, 500))
+      ]).then(() => {
+        console.log('Speech recognition stop completed or timed out');
+      });
+    }
+    
+    // If we got a transcript, put it in the input and send
+    if (transcript) {
+      console.log('Sending transcript:', transcript);
+      this.elements.messageInput.value = transcript;
+      this.onInputChange();
+      // Auto-send the message
+      this.sendMessage();
+    } else {
+      console.log('No transcript to send');
     }
   }
   
