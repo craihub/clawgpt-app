@@ -2108,7 +2108,7 @@ window.CLAWGPT_CONFIG = {
   async joinRelayAsClient({ server, channel, pubkey }) {
     console.log('Joining relay as client:', { server, channel });
     
-    this.updateStatus('Connecting to relay...');
+    this.setStatus('Connecting to relay...');
     
     // Initialize crypto
     if (typeof RelayCrypto === 'undefined') {
@@ -2152,7 +2152,7 @@ window.CLAWGPT_CONFIG = {
       const verifyCode = this.relayCrypto.getVerificationCode();
       console.log('E2E encryption established! Verification:', verifyCode);
       
-      this.updateStatus('Secure relay connected');
+      this.setStatus('Secure relay connected');
       this.showToast(`Secure connection! Verify: ${verifyCode}`, 5000);
       
       // Display verification in UI
@@ -2172,7 +2172,7 @@ window.CLAWGPT_CONFIG = {
             console.log('Joined relay channel:', msg);
           } else if (msg.event === 'host.disconnected') {
             this.showToast('Desktop disconnected', true);
-            this.updateStatus('Host disconnected');
+            this.setStatus('Host disconnected');
           } else if (msg.event === 'error') {
             this.showToast(msg.error || 'Relay error', true);
           }
@@ -2203,7 +2203,7 @@ window.CLAWGPT_CONFIG = {
       console.log('Relay connection closed');
       this.relayWs = null;
       this.relayEncrypted = false;
-      this.updateStatus('Relay disconnected');
+      this.setStatus('Relay disconnected');
       if (this.relayCrypto) {
         this.relayCrypto.destroy();
         this.relayCrypto = null;
@@ -2254,7 +2254,7 @@ window.CLAWGPT_CONFIG = {
   // Connect to gateway through relay (phone side)
   connectViaRelay() {
     console.log('Connecting to gateway via relay proxy...');
-    this.updateStatus('Connecting...');
+    this.setStatus('Connecting...');
     
     // The phone sends messages to relay, desktop forwards to gateway
     // We'll use the relay as our "WebSocket" to gateway
