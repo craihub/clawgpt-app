@@ -5732,6 +5732,7 @@ Example: [0, 2, 5]`;
   }
   
   // Mobile voice input using Capacitor Speech Recognition plugin
+  // Push-to-talk: hold to record, release to send
   async initMobileVoiceInput(voiceBtn) {
     const { SpeechRecognition } = Capacitor.Plugins;
     
@@ -5762,58 +5763,87 @@ Example: [0, 2, 5]`;
       return;
     }
     
-    // Listen for results
+    // Listen for partial results while recording
     SpeechRecognition.addListener('partialResults', (data) => {
       if (data.matches && data.matches.length > 0) {
         this.elements.messageInput.placeholder = data.matches[0] + '...';
       }
     });
     
-    voiceBtn.addEventListener('click', () => this.toggleMobileVoiceInput(voiceBtn));
+    // Push-to-talk: touchstart = start recording, touchend = stop and send
+    voiceBtn.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      this.startPushToTalk(voiceBtn);
+    });
+    
+    voiceBtn.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      this.stopPushToTalkAndSend(voiceBtn);
+    });
+    
+    voiceBtn.addEventListener('touchcancel', (e) => {
+      e.preventDefault();
+      this.stopPushToTalkAndSend(voiceBtn);
+    });
+    
+    // Also support mouse for testing
+    voiceBtn.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      this.startPushToTalk(voiceBtn);
+    });
+    
+    voiceBtn.addEventListener('mouseup', (e) => {
+      e.preventDefault();
+      this.stopPushToTalkAndSend(voiceBtn);
+    });
   }
   
-  async toggleMobileVoiceInput(voiceBtn) {
-    if (!this.mobileSpeech) return;
+  async startPushToTalk(voiceBtn) {
+    if (!this.mobileSpeech || this.isRecording) return;
     
-    if (this.isRecording) {
-      // Stop recording
-      try {
-        const result = await this.mobileSpeech.stop();
-        this.isRecording = false;
-        voiceBtn.classList.remove('recording');
-        this.elements.messageInput.placeholder = 'Message ClawGPT...';
-        
-        // Append result to input
-        if (result.matches && result.matches.length > 0) {
-          const transcript = result.matches[0];
-          const input = this.elements.messageInput;
-          const needsSpace = input.value && !input.value.endsWith(' ');
-          input.value += (needsSpace ? ' ' : '') + transcript;
+    try {
+      this.isRecording = true;
+      voiceBtn.classList.add('recording');
+      this.elements.messageInput.placeholder = 'Listening...';
+      
+      await this.mobileSpeech.start({
+        language: navigator.language || 'en-US',
+        partialResults: true,
+        popup: false
+      });
+    } catch (e) {
+      console.error('Start recording error:', e);
+      this.isRecording = false;
+      voiceBtn.classList.remove('recording');
+      this.elements.messageInput.placeholder = 'Message ClawGPT...';
+      this.showToast('Voice input error: ' + e.message, true);
+    }
+  }
+  
+  async stopPushToTalkAndSend(voiceBtn) {
+    if (!this.mobileSpeech || !this.isRecording) return;
+    
+    try {
+      const result = await this.mobileSpeech.stop();
+      this.isRecording = false;
+      voiceBtn.classList.remove('recording');
+      this.elements.messageInput.placeholder = 'Message ClawGPT...';
+      
+      // If we got a transcript, put it in the input and send
+      if (result.matches && result.matches.length > 0) {
+        const transcript = result.matches[0].trim();
+        if (transcript) {
+          this.elements.messageInput.value = transcript;
           this.onInputChange();
-          input.focus();
+          // Auto-send the message
+          this.sendMessage();
         }
-      } catch (e) {
-        console.error('Stop recording error:', e);
-        this.isRecording = false;
-        voiceBtn.classList.remove('recording');
       }
-    } else {
-      // Start recording
-      try {
-        this.isRecording = true;
-        voiceBtn.classList.add('recording');
-        
-        await this.mobileSpeech.start({
-          language: navigator.language || 'en-US',
-          partialResults: true,
-          popup: false
-        });
-      } catch (e) {
-        console.error('Start recording error:', e);
-        this.isRecording = false;
-        voiceBtn.classList.remove('recording');
-        this.showToast('Voice input error: ' + e.message, true);
-      }
+    } catch (e) {
+      console.error('Stop recording error:', e);
+      this.isRecording = false;
+      voiceBtn.classList.remove('recording');
+      this.elements.messageInput.placeholder = 'Message ClawGPT...';
     }
   }
   
