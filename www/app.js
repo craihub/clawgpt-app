@@ -5872,9 +5872,11 @@ Example: [0, 2, 5]`;
     
     // Listen for partial results while recording
     console.log('Setting up speech recognition listeners...');
+    this.lastPartialResult = '';  // Store last partial result as fallback
     this.mobileSpeech.addListener('partialResults', (data) => {
       console.log('Partial results:', data);
       if (data.matches && data.matches.length > 0) {
+        this.lastPartialResult = data.matches[0];
         this.elements.messageInput.placeholder = data.matches[0] + '...';
       }
     });
@@ -5987,25 +5989,34 @@ Example: [0, 2, 5]`;
       if (this.speechStarted) {
         console.log('Stopping speech recognition...');
         result = await this.mobileSpeech.stop();
-        console.log('Stop result:', result);
+        console.log('Stop result:', JSON.stringify(result));
       } else {
         console.log('Speech never started, skipping stop');
       }
       
       this.resetPushToTalkState(voiceBtn);
       
-      // If we got a transcript, put it in the input and send
+      // Get transcript from result, or fall back to last partial result
+      let transcript = '';
       if (result && result.matches && result.matches.length > 0) {
-        const transcript = result.matches[0].trim();
-        console.log('Got transcript:', transcript);
-        if (transcript) {
-          this.elements.messageInput.value = transcript;
-          this.onInputChange();
-          // Auto-send the message
-          this.sendMessage();
-        }
+        transcript = result.matches[0].trim();
+        console.log('Got transcript from stop():', transcript);
+      } else if (this.lastPartialResult) {
+        transcript = this.lastPartialResult.trim();
+        console.log('Using last partial result as fallback:', transcript);
       } else {
-        console.log('No transcript in result');
+        console.log('No transcript available');
+      }
+      
+      // Clear the fallback for next time
+      this.lastPartialResult = '';
+      
+      // If we got a transcript, put it in the input and send
+      if (transcript) {
+        this.elements.messageInput.value = transcript;
+        this.onInputChange();
+        // Auto-send the message
+        this.sendMessage();
       }
     } catch (e) {
       console.error('Stop recording error:', e);
