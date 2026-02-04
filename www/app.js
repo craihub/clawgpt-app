@@ -1843,6 +1843,7 @@ window.CLAWGPT_CONFIG = {
       if (result.barcodes && result.barcodes.length > 0) {
         const qrContent = result.barcodes[0].rawValue;
         console.log('Scanned QR code:', qrContent);
+        alert('Scanned: ' + qrContent.substring(0, 100));
         
         // Parse the QR code URL and extract relay params
         try {
@@ -1850,6 +1851,8 @@ window.CLAWGPT_CONFIG = {
           const relay = url.searchParams.get('relay');
           const room = url.searchParams.get('room');
           const pubkey = url.searchParams.get('pubkey');
+          
+          console.log('Parsed params - relay:', relay, 'room:', room, 'pubkey:', pubkey ? 'yes' : 'no');
           
           if (relay && room && pubkey) {
             // Join relay room with these params
@@ -1859,7 +1862,7 @@ window.CLAWGPT_CONFIG = {
             // Local network mode - redirect to the URL
             window.location.href = qrContent;
           } else {
-            this.showToast('Invalid QR code format', true);
+            this.showToast('Invalid QR code - missing: ' + (!relay ? 'relay ' : '') + (!room ? 'room ' : '') + (!pubkey ? 'pubkey' : ''), true);
           }
         } catch (e) {
           console.error('Failed to parse QR code:', e);
