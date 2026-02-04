@@ -1,50 +1,6 @@
 // ClawGPT - ChatGPT-like interface for OpenClaw
 // https://github.com/openclaw/openclaw
 
-// === Debug Log Capture ===
-// Captures console output for debugging relay connection issues
-window.clawgptLogs = [];
-window.clawgptLogLimit = 500; // Keep last 500 entries
-
-(function() {
-  const originalLog = console.log;
-  const originalError = console.error;
-  const originalWarn = console.warn;
-  
-  function captureLog(level, args) {
-    const timestamp = new Date().toISOString().substr(11, 12); // HH:MM:SS.mmm
-    const message = Array.from(args).map(arg => {
-      if (typeof arg === 'object') {
-        try { return JSON.stringify(arg); }
-        catch { return String(arg); }
-      }
-      return String(arg);
-    }).join(' ');
-    
-    window.clawgptLogs.push(`[${timestamp}] [${level}] ${message}`);
-    
-    // Trim old entries
-    if (window.clawgptLogs.length > window.clawgptLogLimit) {
-      window.clawgptLogs = window.clawgptLogs.slice(-window.clawgptLogLimit);
-    }
-  }
-  
-  console.log = function(...args) {
-    captureLog('LOG', args);
-    originalLog.apply(console, args);
-  };
-  
-  console.error = function(...args) {
-    captureLog('ERR', args);
-    originalError.apply(console, args);
-  };
-  
-  console.warn = function(...args) {
-    captureLog('WRN', args);
-    originalWarn.apply(console, args);
-  };
-})();
-
 // IndexedDB wrapper for chat storage
 class ChatStorage {
   constructor() {
@@ -186,6 +142,237 @@ class ChatStorage {
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error);
     });
+  }
+}
+
+// ClawGPT Memory - File-based persistent storage for cross-device sync
+// This writes messages to files that can be accessed by external tools (like OpenClaw agents)
+class FileMemoryStorage {
+  constructor() {
+    this.dirHandle = null;
+    this.dbName = 'clawgpt-file-handles';
+    this.db = null;
+    this.enabled = false;
+    this.pendingWrites = [];
+    this.writeDebounce = null;
+  }
+
+  async init() {
+    // Check if File System Access API is available
+    if (!('showDirectoryPicker' in window)) {
+      console.log('FileMemoryStorage: File System Access API not available');
+      return false;
+    }
+
+    // Try to restore saved directory handle
+    await this.initDB();
+    const restored = await this.restoreHandle();
+    if (restored) {
+      this.enabled = true;
+      console.log('FileMemoryStorage: Restored saved directory handle');
+    }
+    return this.enabled;
+  }
+
+  async initDB() {
+    return new Promise((resolve) => {
+      const request = indexedDB.open(this.dbName, 1);
+      request.onerror = () => resolve(null);
+      request.onsuccess = (e) => {
+        this.db = e.target.result;
+        resolve(this.db);
+      };
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains('handles')) {
+          db.createObjectStore('handles', { keyPath: 'id' });
+        }
+      };
+    });
+  }
+
+  async restoreHandle() {
+    if (!this.db) return false;
+
+    return new Promise(async (resolve) => {
+      try {
+        const tx = this.db.transaction(['handles'], 'readonly');
+        const store = tx.objectStore('handles');
+        const req = store.get('memoryDir');
+        
+        req.onsuccess = async () => {
+          if (req.result?.handle) {
+            // Verify we still have permission
+            const permission = await req.result.handle.queryPermission({ mode: 'readwrite' });
+            if (permission === 'granted') {
+              this.dirHandle = req.result.handle;
+              resolve(true);
+            } else {
+              // Try to request permission
+              const newPermission = await req.result.handle.requestPermission({ mode: 'readwrite' });
+              if (newPermission === 'granted') {
+                this.dirHandle = req.result.handle;
+                resolve(true);
+              } else {
+                resolve(false);
+              }
+            }
+          } else {
+            resolve(false);
+          }
+        };
+        req.onerror = () => resolve(false);
+      } catch (e) {
+        console.warn('FileMemoryStorage: Error restoring handle:', e);
+        resolve(false);
+      }
+    });
+  }
+
+  async selectDirectory() {
+    try {
+      this.dirHandle = await window.showDirectoryPicker({
+        id: 'clawgpt-memory',
+        mode: 'readwrite',
+        startIn: 'documents'
+      });
+
+      // Save handle for persistence
+      if (this.db) {
+        const tx = this.db.transaction(['handles'], 'readwrite');
+        tx.objectStore('handles').put({ id: 'memoryDir', handle: this.dirHandle });
+      }
+
+      this.enabled = true;
+      console.log('FileMemoryStorage: Directory selected:', this.dirHandle.name);
+      return true;
+    } catch (e) {
+      if (e.name !== 'AbortError') {
+        console.error('FileMemoryStorage: Error selecting directory:', e);
+      }
+      return false;
+    }
+  }
+
+  async writeMessage(message) {
+    if (!this.enabled || !this.dirHandle) return;
+
+    this.pendingWrites.push(message);
+    
+    // Debounce writes to batch them
+    if (this.writeDebounce) clearTimeout(this.writeDebounce);
+    this.writeDebounce = setTimeout(() => this.flushWrites(), 1000);
+  }
+
+  async flushWrites() {
+    if (!this.enabled || !this.dirHandle || this.pendingWrites.length === 0) return;
+
+    const toWrite = [...this.pendingWrites];
+    this.pendingWrites = [];
+
+    try {
+      // Group messages by date
+      const byDate = {};
+      for (const msg of toWrite) {
+        const date = new Date(msg.timestamp).toISOString().split('T')[0];
+        if (!byDate[date]) byDate[date] = [];
+        byDate[date].push(msg);
+      }
+
+      // Write to date-based files
+      for (const [date, messages] of Object.entries(byDate)) {
+        await this.appendToDateFile(date, messages);
+      }
+    } catch (e) {
+      console.error('FileMemoryStorage: Error writing messages:', e);
+      // Put messages back in queue
+      this.pendingWrites = [...toWrite, ...this.pendingWrites];
+    }
+  }
+
+  async appendToDateFile(date, messages) {
+    const filename = `${date}.jsonl`;
+    
+    try {
+      // Get or create file
+      const fileHandle = await this.dirHandle.getFileHandle(filename, { create: true });
+      
+      // Read existing content
+      const file = await fileHandle.getFile();
+      const existingContent = await file.text();
+      
+      // Load existing message IDs to avoid duplicates
+      const existingIds = new Set();
+      if (existingContent) {
+        for (const line of existingContent.split('\n')) {
+          if (line.trim()) {
+            try {
+              const msg = JSON.parse(line);
+              if (msg.id) existingIds.add(msg.id);
+            } catch {}
+          }
+        }
+      }
+      
+      // Filter out duplicates and append new messages
+      const newMessages = messages.filter(m => !existingIds.has(m.id));
+      if (newMessages.length === 0) return;
+      
+      const newLines = newMessages.map(m => JSON.stringify(m)).join('\n') + '\n';
+      
+      // Write back
+      const writable = await fileHandle.createWritable({ keepExistingData: true });
+      await writable.seek((await file.size));
+      await writable.write(newLines);
+      await writable.close();
+      
+      console.log(`FileMemoryStorage: Wrote ${newMessages.length} messages to ${filename}`);
+    } catch (e) {
+      console.error(`FileMemoryStorage: Error writing to ${filename}:`, e);
+      throw e;
+    }
+  }
+
+  async writeChat(chat) {
+    if (!this.enabled || !this.dirHandle || !chat.messages) return;
+
+    // Write each message with chat context
+    for (let i = 0; i < chat.messages.length; i++) {
+      const msg = chat.messages[i];
+      await this.writeMessage({
+        id: `${chat.id}-${i}`,
+        chatId: chat.id,
+        chatTitle: chat.title || 'Untitled',
+        order: i,
+        role: msg.role,
+        content: msg.content || '',
+        timestamp: msg.timestamp || chat.createdAt || Date.now()
+      });
+    }
+  }
+
+  async syncAllChats(chats) {
+    if (!this.enabled || !this.dirHandle) return 0;
+
+    let count = 0;
+    for (const chat of Object.values(chats)) {
+      if (chat.messages) {
+        await this.writeChat(chat);
+        count += chat.messages.length;
+      }
+    }
+    
+    // Force flush
+    await this.flushWrites();
+    return count;
+  }
+
+  isEnabled() {
+    return this.enabled;
+  }
+
+  getDirectoryName() {
+    return this.dirHandle?.name || null;
   }
 }
 
@@ -467,6 +654,7 @@ class ClawGPT {
     this.pinnedExpanded = false;
     this.storage = new ChatStorage();
     this.memoryStorage = new MemoryStorage();
+    this.fileMemoryStorage = new FileMemoryStorage();
 
     this.loadSettings();
     this.initUI();
@@ -482,29 +670,14 @@ class ClawGPT {
     // Sync existing chats to clawgpt-memory (background)
     this.syncMemoryStorage();
     
+    // Initialize file-based memory storage (for cross-device sync)
+    await this.initFileMemoryStorage();
+    
     // Check if joining relay as client (phone scanned QR)
     if (this.pendingRelayJoin) {
       this.joinRelayAsClient(this.pendingRelayJoin);
       delete this.pendingRelayJoin;
       return; // Don't auto-connect to gateway - we'll get connection through relay
-    }
-    
-    // Check for saved relay connection (auto-reconnect on app reopen)
-    const savedRelay = localStorage.getItem('clawgpt-relay');
-    if (savedRelay) {
-      try {
-        const relayInfo = JSON.parse(savedRelay);
-        // Support both 'room' (new) and 'channel' (legacy)
-        const roomId = relayInfo.room || relayInfo.channel;
-        if (relayInfo.server && roomId && relayInfo.pubkey) {
-          console.log('Found saved relay connection, attempting reconnect to room:', roomId);
-          this.joinRelayAsClient({ server: relayInfo.server, room: roomId, pubkey: relayInfo.pubkey });
-          return;
-        }
-      } catch (e) {
-        console.error('Failed to parse saved relay info:', e);
-        localStorage.removeItem('clawgpt-relay');
-      }
     }
     
     // Check if we need to show setup wizard
@@ -656,19 +829,12 @@ class ClawGPT {
     
     // Check for relay connection params (phone joining via QR code)
     const relayServer = urlParams.get('relay');
-    const relayRoom = urlParams.get('room');      // New: persistent room
-    const relayChannel = urlParams.get('channel'); // Legacy: ephemeral channel
+    const relayChannel = urlParams.get('channel');
     const relayPubkey = urlParams.get('pubkey');
     
-    if (relayServer && (relayRoom || relayChannel) && relayPubkey) {
+    if (relayServer && relayChannel && relayPubkey) {
       // Store for later connection after init completes
-      // Prefer room (persistent) over channel (ephemeral)
-      this.pendingRelayJoin = { 
-        server: relayServer, 
-        room: relayRoom || relayChannel,  // Use room ID
-        pubkey: relayPubkey,
-        isRoom: !!relayRoom  // Track if using new persistent room
-      };
+      this.pendingRelayJoin = { server: relayServer, channel: relayChannel, pubkey: relayPubkey };
       // Clean URL
       window.history.replaceState({}, document.title, window.location.pathname);
     }
@@ -720,6 +886,73 @@ class ClawGPT {
       console.warn('Memory search failed:', err);
       return [];
     }
+  }
+  
+  // Initialize file-based memory storage for cross-device persistence
+  async initFileMemoryStorage() {
+    const initialized = await this.fileMemoryStorage.init();
+    
+    if (initialized) {
+      console.log('File memory storage ready:', this.fileMemoryStorage.getDirectoryName());
+      this.updateFileMemoryUI();
+      
+      // Sync all existing chats to file storage
+      const count = await this.fileMemoryStorage.syncAllChats(this.chats);
+      if (count > 0) {
+        console.log(`File memory: synced ${count} messages to disk`);
+      }
+    } else {
+      console.log('File memory storage not enabled (select folder in settings)');
+    }
+  }
+  
+  // Enable file memory storage (user selects directory)
+  async enableFileMemoryStorage() {
+    const success = await this.fileMemoryStorage.selectDirectory();
+    
+    if (success) {
+      this.showToast(`Memory folder: ${this.fileMemoryStorage.getDirectoryName()}`);
+      this.updateFileMemoryUI();
+      
+      // Sync all chats to the new folder
+      const count = await this.fileMemoryStorage.syncAllChats(this.chats);
+      this.showToast(`Synced ${count} messages to disk`);
+    }
+    
+    return success;
+  }
+  
+  // Update file memory UI elements
+  updateFileMemoryUI() {
+    const statusEl = document.getElementById('fileMemoryStatus');
+    const enableBtn = document.getElementById('enableFileMemoryBtn');
+    const syncBtn = document.getElementById('syncFileMemoryBtn');
+    
+    if (this.fileMemoryStorage.isEnabled()) {
+      if (statusEl) {
+        statusEl.innerHTML = `<span style="color: var(--accent-color);">✓</span> ${this.fileMemoryStorage.getDirectoryName()}`;
+      }
+      if (enableBtn) enableBtn.textContent = 'Change Folder';
+      if (syncBtn) syncBtn.style.display = 'inline-block';
+    } else {
+      if (statusEl) {
+        statusEl.innerHTML = '<span style="color: var(--text-muted);">Not configured</span>';
+      }
+      if (enableBtn) enableBtn.textContent = 'Select Folder';
+      if (syncBtn) syncBtn.style.display = 'none';
+    }
+  }
+  
+  // Manual sync to file memory
+  async syncToFileMemory() {
+    if (!this.fileMemoryStorage.isEnabled()) {
+      this.showToast('Select a folder first', true);
+      return;
+    }
+    
+    this.showToast('Syncing...');
+    const count = await this.fileMemoryStorage.syncAllChats(this.chats);
+    this.showToast(`Synced ${count} messages to disk`);
   }
   
   // Setup Wizard
@@ -1088,6 +1321,16 @@ window.CLAWGPT_CONFIG = {
       console.error('Failed to save chats:', err);
     });
     
+    // Write to file-based memory storage if enabled
+    if (broadcastChatId && this.fileMemoryStorage.isEnabled()) {
+      const chat = this.chats[broadcastChatId];
+      if (chat) {
+        this.fileMemoryStorage.writeChat(chat).catch(err => {
+          console.error('Failed to write to file memory:', err);
+        });
+      }
+    }
+    
     // Broadcast to connected peer if relay is active
     if (broadcastChatId && this.relayEncrypted) {
       this.broadcastChatUpdate(broadcastChatId);
@@ -1115,71 +1358,6 @@ window.CLAWGPT_CONFIG = {
     URL.revokeObjectURL(url);
     
     this.showToast(`Exported ${exportData.chatCount} chats`);
-  }
-  
-  // Copy debug logs to clipboard
-  copyLogs() {
-    const logs = window.clawgptLogs || [];
-    if (logs.length === 0) {
-      this.showToast('No logs to copy');
-      return;
-    }
-    
-    const logText = [
-      `ClawGPT Mobile Logs - ${new Date().toISOString()}`,
-      `App Version: 0.1.0`,
-      `User Agent: ${navigator.userAgent}`,
-      `Relay Info: ${this.relayInfo ? JSON.stringify(this.relayInfo) : 'none'}`,
-      `Relay Encrypted: ${this.relayEncrypted}`,
-      `Gateway URL: ${this.gatewayUrl || 'not set'}`,
-      '---',
-      ...logs
-    ].join('\n');
-    
-    // Use Capacitor clipboard if available, otherwise fallback
-    if (window.Capacitor?.Plugins?.Clipboard) {
-      window.Capacitor.Plugins.Clipboard.write({ string: logText })
-        .then(() => this.showToast(`Copied ${logs.length} log entries`))
-        .catch(() => this.fallbackCopyLogs(logText, logs.length));
-    } else {
-      this.fallbackCopyLogs(logText, logs.length);
-    }
-  }
-  
-  fallbackCopyLogs(text, count) {
-    // Web fallback
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text)
-        .then(() => this.showToast(`Copied ${count} log entries`))
-        .catch(() => this.showToast('Failed to copy logs', true));
-    } else {
-      // Last resort - create textarea
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      document.body.appendChild(textarea);
-      textarea.select();
-      try {
-        document.execCommand('copy');
-        this.showToast(`Copied ${count} log entries`);
-      } catch {
-        this.showToast('Failed to copy logs', true);
-      }
-      document.body.removeChild(textarea);
-    }
-  }
-  
-  clearLogs() {
-    window.clawgptLogs = [];
-    this.updateLogCount();
-    this.showToast('Logs cleared');
-  }
-  
-  updateLogCount() {
-    const countEl = document.getElementById('logCount');
-    if (countEl) {
-      const count = (window.clawgptLogs || []).length;
-      countEl.textContent = `Logs: ${count} entries`;
-    }
   }
   
   // Import chats from a JSON file
@@ -1270,21 +1448,6 @@ window.CLAWGPT_CONFIG = {
     this.renderQRCode(qrContainer, placeholder, mobileUrl);
   }
   
-  // Get or generate persistent pairing ID for relay rooms
-  getOrCreatePairingId() {
-    let pairingId = localStorage.getItem('clawgpt-pairing-id');
-    if (!pairingId) {
-      // Generate a random pairing ID (alphanumeric, 16 chars)
-      pairingId = 'cg-' + Array.from(crypto.getRandomValues(new Uint8Array(12)))
-        .map(b => b.toString(36).padStart(2, '0'))
-        .join('')
-        .substring(0, 16);
-      localStorage.setItem('clawgpt-pairing-id', pairingId);
-      console.log('Generated new pairing ID:', pairingId);
-    }
-    return pairingId;
-  }
-  
   async showRelayQR(qrContainer, placeholder, urlDisplay) {
     // Show loading state
     if (urlDisplay) {
@@ -1327,6 +1490,21 @@ window.CLAWGPT_CONFIG = {
     }
   }
   
+  // Get or generate persistent pairing ID for relay rooms
+  getOrCreatePairingId() {
+    let pairingId = localStorage.getItem('clawgpt-pairing-id');
+    if (!pairingId) {
+      // Generate a memorable room ID
+      pairingId = 'cg-' + Array.from(crypto.getRandomValues(new Uint8Array(12)))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('')
+        .substring(0, 16);
+      localStorage.setItem('clawgpt-pairing-id', pairingId);
+      console.log('Generated new pairing ID:', pairingId);
+    }
+    return pairingId;
+  }
+  
   connectToRelayRoom(relayUrl, roomId) {
     return new Promise((resolve, reject) => {
       // Close existing relay connection
@@ -1367,6 +1545,11 @@ window.CLAWGPT_CONFIG = {
               console.log('Mobile client connected via relay, waiting for key exchange...');
             } else if (msg.event === 'host.connected') {
               console.log('Host reconnected');
+            } else if (msg.event === 'client.disconnected') {
+              console.log('Mobile client disconnected');
+              this.relayEncrypted = false;
+              this.setStatus('Waiting for phone...');
+              this.showToast('Phone disconnected - will reconnect automatically', true);
             } else if (msg.event === 'error') {
               console.error('Relay error:', msg.error);
               reject(new Error(msg.error));
@@ -1418,7 +1601,7 @@ window.CLAWGPT_CONFIG = {
       
       // Timeout
       setTimeout(() => {
-        if (!this.relayChannelId) {
+        if (!this.relayRoomId) {
           this.relayWs?.close();
           reject(new Error('Timeout'));
         }
@@ -1427,14 +1610,10 @@ window.CLAWGPT_CONFIG = {
   }
   
   // Join relay as client (phone side - scanned QR code)
-  async joinRelayAsClient({ server, room, pubkey, isRoom = true }) {
-    console.log('Joining relay as client:', { server, room });
+  async joinRelayAsClient({ server, channel, pubkey }) {
+    console.log('Joining relay as client:', { server, channel });
     
-    this.setStatus('Connecting to relay...');
-    
-    // Save relay info for auto-reconnect (persistent rooms survive app restart)
-    this.relayInfo = { server, room, pubkey };
-    localStorage.setItem('clawgpt-relay', JSON.stringify(this.relayInfo));
+    this.updateStatus('Connecting to relay...');
     
     // Initialize crypto
     if (typeof RelayCrypto === 'undefined') {
@@ -1451,22 +1630,41 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     
-    // Connect to relay room (persistent) or channel (legacy)
+    // Connect to relay channel
     const wsUrl = server.replace('https://', 'wss://').replace('http://', 'ws://');
-    const roomUrl = `${wsUrl}/room/${room}`;
+    const channelUrl = `${wsUrl}/channel/${channel}`;
     
     try {
-      this.relayWs = new WebSocket(roomUrl);
+      this.relayWs = new WebSocket(channelUrl);
     } catch (e) {
       this.showToast('Failed to connect to relay', true);
       return;
     }
     
     this.relayWs.onopen = () => {
-      console.log('Connected to relay room as client, waiting for room.joined...');
-      this.setStatus('Connecting...', false);
-      // Don't send keyexchange here - wait for room.joined event
-      // That way we know if host is connected and avoid double keyexchange
+      console.log('Connected to relay channel as client');
+      
+      // Send our public key to complete key exchange
+      this.relayWs.send(JSON.stringify({
+        type: 'keyexchange',
+        publicKey: this.relayCrypto.getPublicKey()
+      }));
+      
+      // Mark as encrypted (we already derived shared secret from host's pubkey in QR)
+      this.relayEncrypted = true;
+      
+      // Show verification code
+      const verifyCode = this.relayCrypto.getVerificationCode();
+      console.log('E2E encryption established! Verification:', verifyCode);
+      
+      this.updateStatus('Secure relay connected');
+      this.showToast(`Secure connection! Verify: ${verifyCode}`, 5000);
+      
+      // Display verification in UI
+      this.showRelayClientStatus(verifyCode);
+      
+      // Send our chat metadata to sync
+      this.sendChatSyncMeta();
     };
     
     this.relayWs.onmessage = (event) => {
@@ -1475,67 +1673,13 @@ window.CLAWGPT_CONFIG = {
         
         // Handle relay control messages
         if (msg.type === 'relay') {
-          if (msg.event === 'room.joined' || msg.event === 'channel.joined') {
-            console.log('Joined relay room:', msg);
-            // If host is already connected, do key exchange
-            if (msg.hostConnected) {
-              console.log('Host is connected, sending key exchange...');
-              this.relayWs.send(JSON.stringify({
-                type: 'keyexchange',
-                publicKey: this.relayCrypto.getPublicKey()
-              }));
-              // DON'T mark as encrypted yet - wait for keyexchange-response
-              // The saved host pubkey might be stale if desktop refreshed
-              this.setStatus('Securing...', false);
-            } else {
-              // Host not connected yet, wait for host.connected event
-              this.setStatus('Waiting for desktop...', false);
-            }
-          } else if (msg.event === 'host.connected') {
-            // Host (re)connected - redo key exchange
-            console.log('Host reconnected, sending key exchange...');
-            // Generate fresh keypair for forward secrecy
-            this.relayCrypto.generateKeyPair();
-            this.relayWs.send(JSON.stringify({
-              type: 'keyexchange',
-              publicKey: this.relayCrypto.getPublicKey()
-            }));
-            // Note: Don't mark as encrypted yet - wait for keyexchange-response
-            // because host has new keypair and we need its new pubkey
-            this.setStatus('Reconnecting...', false);
+          if (msg.event === 'channel.joined') {
+            console.log('Joined relay channel:', msg);
           } else if (msg.event === 'host.disconnected') {
-            this.showToast('Desktop disconnected - will reconnect when desktop is back', true);
-            this.setStatus('Waiting for desktop...');
-            this.relayEncrypted = false; // Need new key exchange when host returns
-          } else if (msg.event === 'replaced') {
-            // Another client connected to the same room - we got kicked
-            console.log('Replaced by another client connection');
-            this.showToast('Reconnected from another device', true);
-            // Don't clear relay info - the new connection is probably us reconnecting
+            this.showToast('Desktop disconnected', true);
+            this.updateStatus('Host disconnected');
           } else if (msg.event === 'error') {
             this.showToast(msg.error || 'Relay error', true);
-          }
-          return;
-        }
-        
-        // Handle keyexchange-response from host (in case host's key changed since QR was scanned)
-        if (msg.type === 'keyexchange-response' && msg.publicKey) {
-          console.log('Received host public key response');
-          // Update host's public key and re-derive shared secret
-          if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
-            this.relayEncrypted = true;
-            const verifyCode = this.relayCrypto.getVerificationCode();
-            console.log('Updated shared secret, verification:', verifyCode);
-            this.setStatus('Connected', true);
-            this.showToast(`Secure! Verify: ${verifyCode}`);
-            this.showRelayClientStatus(verifyCode);
-            // Update saved relay info with new pubkey
-            if (this.relayInfo) {
-              this.relayInfo.pubkey = msg.publicKey;
-              localStorage.setItem('clawgpt-relay', JSON.stringify(this.relayInfo));
-            }
-            // Start chat sync after encryption is established
-            this.sendChatSyncMeta();
           }
           return;
         }
@@ -1557,26 +1701,17 @@ window.CLAWGPT_CONFIG = {
     
     this.relayWs.onerror = (error) => {
       console.error('Relay error:', error);
-      this.showToast('Relay connection error - will retry...', true);
-      // DON'T clear relay info - room persists, we can reconnect
+      this.showToast('Relay connection error', true);
     };
     
     this.relayWs.onclose = () => {
       console.log('Relay connection closed');
       this.relayWs = null;
       this.relayEncrypted = false;
-      this.relayIsGatewayProxy = false;
-      // DON'T clear relay info or crypto - room persists on server
-      this.setStatus('Reconnecting...');
-      
-      // Auto-reconnect after a short delay (if app is visible)
-      if (document.visibilityState === 'visible' && this.relayInfo) {
-        console.log('Auto-reconnecting to relay in 2s...');
-        setTimeout(() => {
-          if (!this.relayWs && this.relayInfo) {
-            this.joinRelayAsClient(this.relayInfo);
-          }
-        }, 2000);
+      this.updateStatus('Relay disconnected');
+      if (this.relayCrypto) {
+        this.relayCrypto.destroy();
+        this.relayCrypto = null;
       }
     };
   }
@@ -1624,8 +1759,7 @@ window.CLAWGPT_CONFIG = {
   // Connect to gateway through relay (phone side)
   connectViaRelay() {
     console.log('Connecting to gateway via relay proxy...');
-    // Don't overwrite status - we're already showing "Connected" from relay encryption
-    // The gateway auth happens transparently over the encrypted relay
+    this.updateStatus('Connecting...');
     
     // The phone sends messages to relay, desktop forwards to gateway
     // We'll use the relay as our "WebSocket" to gateway
@@ -1663,11 +1797,12 @@ window.CLAWGPT_CONFIG = {
   
   // Show relay client status in UI
   showRelayClientStatus(verifyCode) {
-    // Store verification code for settings display
-    this.relayVerifyCode = verifyCode;
-    
-    // Update status to just show "Secure" (green)
-    this.setStatus('Secure', true);
+    // Update status area or show a banner
+    const statusEl = document.getElementById('status');
+    if (statusEl) {
+      statusEl.innerHTML = `<span style="color: var(--accent-color);">Secure</span> <code style="font-size: 0.8em;">${verifyCode}</code>`;
+      statusEl.title = 'Connected via encrypted relay. Verify this code matches your desktop.';
+    }
   }
   
   handleRelayKeyExchange(peerPublicKey) {
@@ -1685,11 +1820,22 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     
+    // Send our public key back (in case phone reconnected and our key changed)
+    if (this.relayWs && this.relayWs.readyState === WebSocket.OPEN) {
+      this.relayWs.send(JSON.stringify({
+        type: 'keyexchange-response',
+        publicKey: this.relayCrypto.getPublicKey()
+      }));
+    }
+    
     this.relayEncrypted = true;
     
     // Get verification code (words)
     const verifyCode = this.relayCrypto.getVerificationCode();
     console.log('E2E encryption established! Verification:', verifyCode);
+    
+    // Update status to show connected
+    this.setStatus('Connected', true);
     
     // Update the UI to show connected + verification code
     const urlDisplay = document.getElementById('mobileUrl');
@@ -1697,7 +1843,7 @@ window.CLAWGPT_CONFIG = {
       urlDisplay.innerHTML = `<strong>Mode:</strong> Remote Relay (E2E Encrypted)<br><strong>Verify:</strong> <code style="font-size: 0.95em; background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${verifyCode}</code><br><span style="color: var(--accent-color);">Match these words on your phone</span>`;
     }
     
-    this.showToast(`Secure! Verify: ${verifyCode}`);
+    this.showToast(`Secure! Verify: ${verifyCode}`, 5000);
     
     // Now send the auth token encrypted
     this.sendRelayMessage({
@@ -1823,6 +1969,17 @@ window.CLAWGPT_CONFIG = {
       this.saveChats();
       this.renderChatList();
       
+      // Write synced chats to file memory
+      if (this.fileMemoryStorage.isEnabled()) {
+        for (const [id, chat] of Object.entries(incomingChats)) {
+          if (this.chats[id] === chat) { // Only write if we actually merged it
+            this.fileMemoryStorage.writeChat(chat).catch(err => {
+              console.warn('Failed to write synced chat to file:', err);
+            });
+          }
+        }
+      }
+      
       // Refresh current chat if it was updated
       if (this.currentChatId && incomingChats[this.currentChatId]) {
         this.renderMessages();
@@ -1847,6 +2004,13 @@ window.CLAWGPT_CONFIG = {
       this.chats[chat.id] = chat;
       this.saveChats();
       this.renderChatList();
+      
+      // Write to file memory
+      if (this.fileMemoryStorage.isEnabled()) {
+        this.fileMemoryStorage.writeChat(chat).catch(err => {
+          console.warn('Failed to write chat update to file:', err);
+        });
+      }
       
       if (this.currentChatId === chat.id) {
         this.renderMessages();
@@ -1948,124 +2112,6 @@ window.CLAWGPT_CONFIG = {
       });
     } else {
       qrContainer.innerHTML = '<p style="color: var(--text-muted);">QR library not loaded</p>';
-    }
-  }
-  
-  // === Mobile QR Scanning (Capacitor) ===
-  
-  async startQrScan() {
-    // Check if we're in a Capacitor native app
-    if (typeof Capacitor !== 'undefined' && Capacitor.isNativePlatform()) {
-      await this.startNativeQrScan();
-    } else {
-      // Fallback for web - show instructions
-      this.showToast('QR scanning requires the mobile app. Use Manual Setup instead.');
-      const advancedToggle = document.getElementById('advancedSetupToggle');
-      const advancedFields = document.getElementById('advancedSetupFields');
-      if (advancedToggle && advancedFields) {
-        advancedFields.style.display = 'block';
-        advancedToggle.classList.add('expanded');
-      }
-    }
-  }
-  
-  async startNativeQrScan() {
-    try {
-      const { BarcodeScanner } = Capacitor.Plugins;
-      
-      // Check/request camera permission
-      const { camera } = await BarcodeScanner.checkPermissions();
-      if (camera !== 'granted') {
-        const result = await BarcodeScanner.requestPermissions();
-        if (result.camera !== 'granted') {
-          this.showToast('Camera permission is required to scan QR codes');
-          return;
-        }
-      }
-      
-      // Hide the modal and show scanner UI
-      const modal = document.getElementById('setupModal');
-      if (modal) modal.style.opacity = '0';
-      document.body.classList.add('scanner-active');
-      
-      const listener = await BarcodeScanner.addListener('barcodeScanned', async (result) => {
-        const barcode = result.barcode;
-        if (barcode && barcode.rawValue) {
-          await listener.remove();
-          await BarcodeScanner.stopScan();
-          document.body.classList.remove('scanner-active');
-          if (modal) modal.style.opacity = '1';
-          
-          this.handleQrCodeScanned(barcode.rawValue);
-        }
-      });
-      
-      await BarcodeScanner.startScan();
-      
-      // Store cancel function for later use
-      this.cancelQrScan = async () => {
-        await listener.remove();
-        await BarcodeScanner.stopScan();
-        document.body.classList.remove('scanner-active');
-        if (modal) modal.style.opacity = '1';
-      };
-      
-    } catch (error) {
-      console.error('QR scan error:', error);
-      document.body.classList.remove('scanner-active');
-      const modal = document.getElementById('setupModal');
-      if (modal) modal.style.opacity = '1';
-      this.showToast('Failed to start QR scanner: ' + error.message);
-    }
-  }
-  
-  handleQrCodeScanned(data) {
-    console.log('QR scanned raw data:', data);
-    
-    try {
-      // Check if it's a relay URL (web URL with relay params)
-      // Support both 'room' (new persistent) and 'channel' (legacy ephemeral)
-      if (data.includes('relay=') && (data.includes('room=') || data.includes('channel=')) && data.includes('pubkey=')) {
-        const url = new URL(data);
-        const relayServer = url.searchParams.get('relay');
-        const roomId = url.searchParams.get('room') || url.searchParams.get('channel');
-        const publicKey = url.searchParams.get('pubkey');
-        
-        if (relayServer && roomId && publicKey) {
-          // Close setup modal
-          const modal = document.getElementById('setupModal');
-          if (modal) modal.style.display = 'none';
-          
-          // Join relay room as client (persistent - auto-reconnects)
-          this.joinRelayAsClient({ server: relayServer, room: roomId, pubkey: publicKey });
-          return;
-        }
-      }
-      
-      // Try to parse as direct connection URL
-      const url = new URL(data);
-      const gatewayUrl = url.searchParams.get('gateway') || url.searchParams.get('url');
-      const authToken = url.searchParams.get('token') || url.searchParams.get('auth');
-      const sessionKey = url.searchParams.get('session') || 'main';
-      
-      if (gatewayUrl) {
-        this.gatewayUrl = gatewayUrl;
-        this.authToken = authToken || '';
-        this.sessionKey = sessionKey;
-        this.saveSettings();
-        
-        // Close setup modal and connect
-        const modal = document.getElementById('setupModal');
-        if (modal) modal.style.display = 'none';
-        
-        this.showToast('Settings saved! Connecting...');
-        this.autoConnect();
-      } else {
-        this.showToast('Invalid QR code format', true);
-      }
-    } catch (error) {
-      console.error('QR parse error:', error);
-      this.showToast('Could not parse QR code: ' + error.message, true);
     }
   }
   
@@ -2207,78 +2253,29 @@ window.CLAWGPT_CONFIG = {
       });
     }
     
+    // File memory storage buttons
+    const enableFileMemoryBtn = document.getElementById('enableFileMemoryBtn');
+    const syncFileMemoryBtn = document.getElementById('syncFileMemoryBtn');
+    
+    if (enableFileMemoryBtn) {
+      enableFileMemoryBtn.addEventListener('click', () => this.enableFileMemoryStorage());
+    }
+    if (syncFileMemoryBtn) {
+      syncFileMemoryBtn.addEventListener('click', () => this.syncToFileMemory());
+    }
+    
     // QR Code for mobile access
     const showQrBtn = document.getElementById('showQrBtn');
     if (showQrBtn) {
       showQrBtn.addEventListener('click', () => this.showMobileQR());
     }
     
-    // Debug log buttons
-    const copyLogsBtn = document.getElementById('copyLogsBtn');
-    const clearLogsBtn = document.getElementById('clearLogsBtn');
-    if (copyLogsBtn) {
-      copyLogsBtn.addEventListener('click', () => this.copyLogs());
-    }
-    if (clearLogsBtn) {
-      clearLogsBtn.addEventListener('click', () => this.clearLogs());
-    }
-    // Update log count when settings open
-    this.updateLogCount();
-    
-    // QR Scan button (mobile app - scan desktop's QR)
-    const scanQrBtn = document.getElementById('scanQrBtn');
-    if (scanQrBtn) {
-      scanQrBtn.addEventListener('click', () => this.startQrScan());
-    }
-    
-    // Advanced setup toggle (mobile app)
-    const advancedToggle = document.getElementById('advancedSetupToggle');
-    const advancedFields = document.getElementById('advancedSetupFields');
-    if (advancedToggle && advancedFields) {
-      advancedToggle.addEventListener('click', () => {
-        const isExpanded = advancedFields.style.display !== 'none';
-        advancedFields.style.display = isExpanded ? 'none' : 'block';
-        advancedToggle.classList.toggle('expanded', !isExpanded);
-      });
-    }
-    
-    // Setup save button (mobile app manual setup)
-    const setupSaveBtn = document.getElementById('setupSaveBtn');
-    if (setupSaveBtn) {
-      setupSaveBtn.addEventListener('click', () => {
-        const gatewayUrl = document.getElementById('setupGatewayUrl')?.value;
-        const authToken = document.getElementById('setupAuthToken')?.value;
-        const sessionKey = document.getElementById('setupSessionKey')?.value || 'main';
-        
-        if (gatewayUrl) {
-          this.gatewayUrl = gatewayUrl;
-          this.authToken = authToken || '';
-          this.sessionKey = sessionKey;
-          this.saveSettings();
-          
-          const modal = document.getElementById('setupModal');
-          if (modal) modal.style.display = 'none';
-          
-          this.showToast('Settings saved!');
-          this.autoConnect();
-        } else {
-          this.showToast('Please enter a Gateway URL', true);
-        }
-      });
-    }
-    
     this.elements.menuBtn.addEventListener('click', () => this.toggleSidebar());
     
-    // Sidebar overlay - close sidebar when clicking outside (only if sidebar is open)
+    // Sidebar overlay - close sidebar when clicking outside
     const sidebarOverlay = document.getElementById('sidebarOverlay');
     if (sidebarOverlay) {
-      sidebarOverlay.addEventListener('click', (e) => {
-        // Only close if overlay is actually active
-        if (sidebarOverlay.classList.contains('active')) {
-          e.preventDefault();
-          this.closeSidebar();
-        }
-      });
+      sidebarOverlay.addEventListener('click', () => this.closeSidebar());
     }
     
     // Mobile close button (top of sidebar)
@@ -2500,109 +2497,6 @@ window.CLAWGPT_CONFIG = {
 
     // Render chat list
     this.renderChatList();
-    
-    // Auto-reconnect when app returns to foreground
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        this.checkAndReconnect();
-      }
-    });
-    
-    // Swipe gesture to open/close sidebar on mobile
-    this.setupSwipeGestures();
-    
-    // Also handle Capacitor app state changes (more reliable on mobile)
-    if (window.Capacitor?.Plugins?.App) {
-      window.Capacitor.Plugins.App.addListener('appStateChange', ({ isActive }) => {
-        if (isActive) {
-          this.checkAndReconnect();
-        }
-      });
-    }
-  }
-  
-  // Check connection status and reconnect if needed
-  checkAndReconnect() {
-    console.log('App became visible, checking connections...');
-    console.log('Relay info:', !!this.relayInfo, 'RelayWs:', this.relayWs?.readyState, 'RelayEncrypted:', this.relayEncrypted, 'RelayIsProxy:', this.relayIsGatewayProxy);
-    
-    // If we have relay info saved, we should reconnect via relay
-    if (this.relayInfo) {
-      // Check if relay WebSocket is dead or not encrypted (needs fresh key exchange)
-      const wsState = this.relayWs?.readyState;
-      const needsReconnect = !this.relayWs || 
-                            wsState === WebSocket.CLOSED || 
-                            wsState === WebSocket.CLOSING ||
-                            !this.relayEncrypted;
-      
-      if (needsReconnect) {
-        console.log('Relay needs reconnect (state:', wsState, 'encrypted:', this.relayEncrypted, ')');
-        this.relayEncrypted = false;
-        this.relayIsGatewayProxy = false;
-        // Close stale WebSocket if it exists
-        if (this.relayWs && wsState !== WebSocket.CLOSED) {
-          try { this.relayWs.close(); } catch (e) {}
-        }
-        this.relayWs = null;
-        this.joinRelayAsClient(this.relayInfo);
-        return; // Don't also try direct gateway
-      }
-      
-      // WebSocket appears OPEN - but might be zombie. Check if encrypted.
-      if (!this.relayEncrypted) {
-        console.log('Relay WebSocket open but not encrypted, reconnecting...');
-        try { this.relayWs.close(); } catch (e) {}
-        this.relayWs = null;
-        this.joinRelayAsClient(this.relayInfo);
-        return;
-      }
-      
-      console.log('Relay connection appears healthy');
-      return; // Using relay, don't try direct gateway
-    }
-    
-    // No relay - check direct gateway connection
-    if (this.gatewayUrl && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
-      console.log('Gateway disconnected, attempting reconnect...');
-      this.connect();
-    }
-  }
-  
-  setupSwipeGestures() {
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let touchStartTime = 0;
-    
-    // Use document for full-screen swipe detection
-    document.addEventListener('touchstart', (e) => {
-      touchStartX = e.touches[0].clientX;
-      touchStartY = e.touches[0].clientY;
-      touchStartTime = Date.now();
-    }, { passive: true });
-    
-    document.addEventListener('touchend', (e) => {
-      const touchEndX = e.changedTouches[0].clientX;
-      const touchEndY = e.changedTouches[0].clientY;
-      const touchDuration = Date.now() - touchStartTime;
-      
-      const deltaX = touchEndX - touchStartX;
-      const deltaY = touchEndY - touchStartY;
-      
-      // Must be a quick horizontal swipe (not scrolling)
-      if (touchDuration < 300 && Math.abs(deltaX) > 80 && Math.abs(deltaY) < 50) {
-        if (deltaX > 0 && touchStartX < 50) {
-          // Swipe right from left edge - open sidebar
-          e.preventDefault();
-          this.elements.sidebar.classList.add('open');
-          const overlay = document.getElementById('sidebarOverlay');
-          if (overlay) overlay.classList.add('active');
-        } else if (deltaX < 0 && this.elements.sidebar.classList.contains('open')) {
-          // Swipe left while sidebar is open - close it
-          e.preventDefault();
-          this.closeSidebar();
-        }
-      }
-    }, { passive: true });
   }
 
   applyTheme() {
@@ -2632,13 +2526,7 @@ window.CLAWGPT_CONFIG = {
     this.elements.sidebar.classList.remove('open');
     const overlay = document.getElementById('sidebarOverlay');
     if (overlay) {
-      // Ensure overlay is completely hidden when sidebar closes
       overlay.classList.remove('active');
-      overlay.style.display = 'none';
-      // Re-enable display after a tick to allow CSS to take over
-      setTimeout(() => {
-        overlay.style.display = '';
-      }, 0);
     }
   }
   
@@ -2659,22 +2547,7 @@ window.CLAWGPT_CONFIG = {
     this.elements.settingsModal.classList.add('open');
     this.updateSettingsButtons();
     this.updateSettingsForConfigMode();
-    this.updateLogCount();
-    this.updateVerifyCodeDisplay();
-  }
-  
-  updateVerifyCodeDisplay() {
-    const el = document.getElementById('verifyCodeDisplay');
-    if (!el) return;
-    
-    if (this.relayEncrypted && this.relayVerifyCode) {
-      el.innerHTML = `Verification: <code style="background: var(--bg-tertiary); padding: 2px 6px; border-radius: 4px;">${this.relayVerifyCode}</code>`;
-      el.title = 'Match these words with your desktop to confirm secure connection';
-    } else if (this.relayInfo) {
-      el.textContent = 'Verification: Connecting...';
-    } else {
-      el.textContent = 'Verification: Not connected via relay';
-    }
+    this.updateFileMemoryUI();
   }
   
   updateSettingsForConfigMode() {
@@ -3553,6 +3426,7 @@ Example: [0, 2, 5]`;
   }
 
   setStatus(text, isConnected = false) {
+    if (!this.elements.status) return;
     this.elements.status.textContent = text;
     this.elements.status.classList.toggle('connected', isConnected);
   }
@@ -3664,10 +3538,7 @@ Example: [0, 2, 5]`;
     this.renderMessages();
     this.renderChatList();
     this.updateTokenDisplay(); // Also updates model display
-    // Only close sidebar on mobile, not on desktop
-    if (window.innerWidth <= 768) {
-      this.closeSidebar();
-    }
+    this.elements.sidebar.classList.remove('open');
   }
 
   deleteChat(chatId) {
@@ -5156,31 +5027,20 @@ Example: [0, 2, 5]`;
   }
 
   // Text-to-Speech
-  async initSpeechSynthesis() {
-    this.currentSpeakBtn = null;
-    this.voices = [];
-    this.ttsSupported = false;
-    
-    // Try Capacitor native TTS first (works on Android)
-    if (window.Capacitor?.Plugins?.TextToSpeech) {
-      try {
-        this.nativeTTS = window.Capacitor.Plugins.TextToSpeech;
-        this.ttsSupported = true;
-        this.ttsMode = 'native';
-        console.log('TTS using native Capacitor plugin');
-        return;
-      } catch (e) {
-        console.log('Native TTS not available:', e);
-      }
+  initSpeechSynthesis() {
+    if (!('speechSynthesis' in window)) {
+      this.ttsSupported = false;
+      return;
     }
     
-    // Fallback to Web Speech API (works in browsers)
-    if ('speechSynthesis' in window) {
-      this.ttsMode = 'web';
-      this.loadVoices();
-      if (speechSynthesis.onvoiceschanged !== undefined) {
-        speechSynthesis.onvoiceschanged = () => this.loadVoices();
-      }
+    this.ttsSupported = true;
+    this.currentSpeakBtn = null;
+    this.voices = [];
+    
+    // Load voices (may be async)
+    this.loadVoices();
+    if (speechSynthesis.onvoiceschanged !== undefined) {
+      speechSynthesis.onvoiceschanged = () => this.loadVoices();
     }
   }
   
@@ -5188,15 +5048,19 @@ Example: [0, 2, 5]`;
     this.voices = speechSynthesis.getVoices();
     console.log('TTS voices loaded:', this.voices.length);
     
+    // Hide speak buttons if no voices available
     if (this.voices.length === 0) {
-      // Don't hide buttons yet - voices might load async
-      // On mobile, we'll use native TTS anyway
-      if (this.ttsMode !== 'native') {
-        this.ttsSupported = false;
-      }
+      document.querySelectorAll('.speak-btn').forEach(btn => {
+        btn.style.display = 'none';
+      });
+      this.ttsSupported = false;
       return;
     }
     
+    // Show speak buttons if voices become available
+    document.querySelectorAll('.speak-btn').forEach(btn => {
+      btn.style.display = '';
+    });
     this.ttsSupported = true;
     
     // Log available voices for debugging
@@ -5216,7 +5080,7 @@ Example: [0, 2, 5]`;
     }
   }
   
-  async toggleSpeech(btn, text) {
+  toggleSpeech(btn, text) {
     if (!this.ttsSupported) {
       this.showToast('Text-to-speech not supported', true);
       return;
@@ -5225,63 +5089,6 @@ Example: [0, 2, 5]`;
     const speakIcon = btn.dataset.speakIcon;
     const stopIcon = btn.dataset.stopIcon;
     
-    // Use native TTS on mobile (Capacitor)
-    if (this.ttsMode === 'native' && this.nativeTTS) {
-      // If already speaking, stop it
-      if (this.currentSpeakBtn === btn && this.isSpeaking) {
-        try {
-          await this.nativeTTS.stop();
-        } catch (e) {}
-        btn.innerHTML = speakIcon;
-        btn.classList.remove('speaking');
-        btn.title = 'Read aloud';
-        this.currentSpeakBtn = null;
-        this.isSpeaking = false;
-        return;
-      }
-      
-      // Stop any current speech
-      if (this.isSpeaking) {
-        try {
-          await this.nativeTTS.stop();
-        } catch (e) {}
-        if (this.currentSpeakBtn) {
-          this.currentSpeakBtn.innerHTML = this.currentSpeakBtn.dataset.speakIcon;
-          this.currentSpeakBtn.classList.remove('speaking');
-          this.currentSpeakBtn.title = 'Read aloud';
-        }
-      }
-      
-      // Start speaking with native TTS
-      btn.innerHTML = stopIcon;
-      btn.classList.add('speaking');
-      btn.title = 'Stop reading';
-      this.currentSpeakBtn = btn;
-      this.isSpeaking = true;
-      
-      try {
-        await this.nativeTTS.speak({
-          text: text,
-          lang: 'en-GB',
-          rate: 1.0,
-          pitch: 1.0,
-          volume: 1.0
-        });
-      } catch (e) {
-        console.error('Native TTS error:', e);
-        this.showToast('Speech failed: ' + (e.message || 'Unknown error'), true);
-      }
-      
-      // Speech finished
-      btn.innerHTML = speakIcon;
-      btn.classList.remove('speaking');
-      btn.title = 'Read aloud';
-      this.currentSpeakBtn = null;
-      this.isSpeaking = false;
-      return;
-    }
-    
-    // Fallback to Web Speech API
     // If already speaking this message, stop it
     if (this.currentSpeakBtn === btn && speechSynthesis.speaking) {
       speechSynthesis.cancel();
