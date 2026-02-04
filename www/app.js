@@ -2206,12 +2206,12 @@ window.CLAWGPT_CONFIG = {
           }
           
         } catch (e) {
-          console.error('Relay message parse error:', e);
+          console.error('Relay message parse error:', e.message || e.toString(), e.stack);
         }
       };
       
       this.relayWs.onerror = (error) => {
-        console.error('Relay WebSocket error:', error);
+        console.error('Relay WebSocket error:', error.message || error.toString());
         reject(new Error('Connection failed'));
       };
       
@@ -2349,12 +2349,12 @@ window.CLAWGPT_CONFIG = {
           return;
         }
       } catch (e) {
-        console.error('Relay message error:', e);
+        console.error('Relay message error:', e.message || e.toString(), e.stack);
       }
     };
     
     this.relayWs.onerror = (error) => {
-      console.error('Relay reconnect error:', error);
+        console.error('Relay reconnect error:', error.message || error.toString());
       this.setStatus('Connection error');
     };
     
@@ -2515,12 +2515,12 @@ window.CLAWGPT_CONFIG = {
           return;
         }
       } catch (e) {
-        console.error('Relay message parse error:', e);
+        console.error('Relay message parse error:', e.message || e.toString(), e.stack);
       }
     };
     
     this.relayWs.onerror = (error) => {
-      console.error('Relay error:', error);
+      console.error('Relay error:', error.message || error.toString());
       const errMsg = 'Relay connection error';
       window._clawgptErrors.push(errMsg);
       showErrorBanner(errMsg, false);
@@ -2743,9 +2743,10 @@ window.CLAWGPT_CONFIG = {
     console.log(`[Relay] Sent full state: ${Object.keys(state.chats).length} chats`);
   }
   
-  // Legacy sync - keep for backwards compatibility but redirect to full state
+  // Legacy sync - in thin client mode, request state from desktop
   sendChatSyncMeta() {
-    this.sendFullState();
+    // Phone is thin client - request state, don't send
+    this.requestFullState();
   }
   
   getDeviceId() {
