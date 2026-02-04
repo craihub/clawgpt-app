@@ -3040,6 +3040,11 @@ window.CLAWGPT_CONFIG = {
       if (newMsg.role === 'assistant') {
         this.streaming = false;
         this.updateStreamingUI();
+        
+        // If voice chat mode is active, speak the response
+        if (this.voiceChatActive && this.voiceChatPendingResponse) {
+          this.handleVoiceChatResponse(newMsg.content);
+        }
       }
       
       // Switch to this chat if we initiated it
@@ -5916,6 +5921,13 @@ Example: [0, 2, 5]`;
     this.lastPartialResult = '';  // Store last partial result as fallback
     this.acceptingPartialResults = false;  // Flag to control when we accept results
     this.mobileSpeech.addListener('partialResults', (data) => {
+      // Voice chat mode takes priority
+      if (this.voiceChatActive && this.voiceChatState === 'LISTENING') {
+        this.handleVoiceChatPartialResult(data.matches);
+        return;
+      }
+      
+      // Regular push-to-talk mode
       // Only update if we're accepting results (recording or in processing window)
       if (!this.acceptingPartialResults) {
         console.log('Ignoring partial results (not accepting)');
@@ -5933,31 +5945,90 @@ Example: [0, 2, 5]`;
     
     console.log('Push-to-talk initialized successfully');
     
+    // Double-tap detection for voice chat mode
+    this.lastTapTime = 0;
+    this.tapTimeout = null;
+    this.touchStartTime = 0;
+    
     // Push-to-talk: touchstart = start recording, touchend = stop and send
+    // Double-tap (two quick taps) = enter voice chat mode
     voiceBtn.addEventListener('touchstart', (e) => {
       e.preventDefault();
-      this.startPushToTalk(voiceBtn);
+      this.touchStartTime = Date.now();
+      
+      // Start push-to-talk (will be cancelled if it's a quick tap)
+      this.pttDelayTimeout = setTimeout(() => {
+        this.startPushToTalk(voiceBtn);
+      }, 200); // Wait 200ms before starting PTT to detect quick taps
     });
     
     voiceBtn.addEventListener('touchend', (e) => {
       e.preventDefault();
-      this.stopPushToTalkAndSend(voiceBtn);
+      const touchDuration = Date.now() - this.touchStartTime;
+      
+      // If touch was short (< 200ms), it's a tap, not a hold
+      if (touchDuration < 200) {
+        // Cancel the PTT start
+        if (this.pttDelayTimeout) {
+          clearTimeout(this.pttDelayTimeout);
+          this.pttDelayTimeout = null;
+        }
+        
+        // Check for double-tap
+        const now = Date.now();
+        if (now - this.lastTapTime < 400) {
+          // Double tap detected!
+          console.log('Double tap detected - entering voice chat mode');
+          this.lastTapTime = 0;
+          this.enterVoiceChatMode();
+        } else {
+          this.lastTapTime = now;
+        }
+      } else {
+        // It was a hold - do normal push-to-talk release
+        this.stopPushToTalkAndSend(voiceBtn);
+      }
     });
     
     voiceBtn.addEventListener('touchcancel', (e) => {
       e.preventDefault();
+      if (this.pttDelayTimeout) {
+        clearTimeout(this.pttDelayTimeout);
+        this.pttDelayTimeout = null;
+      }
       this.stopPushToTalkAndSend(voiceBtn);
     });
     
     // Also support mouse for testing
     voiceBtn.addEventListener('mousedown', (e) => {
       e.preventDefault();
-      this.startPushToTalk(voiceBtn);
+      this.touchStartTime = Date.now();
+      this.pttDelayTimeout = setTimeout(() => {
+        this.startPushToTalk(voiceBtn);
+      }, 200);
     });
     
     voiceBtn.addEventListener('mouseup', (e) => {
       e.preventDefault();
-      this.stopPushToTalkAndSend(voiceBtn);
+      const touchDuration = Date.now() - this.touchStartTime;
+      
+      if (touchDuration < 200) {
+        if (this.pttDelayTimeout) {
+          clearTimeout(this.pttDelayTimeout);
+          this.pttDelayTimeout = null;
+        }
+        
+        const now = Date.now();
+        if (now - this.lastTapTime < 400) {
+          console.log('Double tap detected - entering voice chat mode');
+          this.lastTapTime = 0;
+          this.enterVoiceChatMode();
+        } else {
+          this.lastTapTime = now;
+        }
+      } else {
+        this.stopPushToTalkAndSend(voiceBtn);
+      }
     });
     
     // Handle mouse leaving button while held - treat as release
@@ -6103,6 +6174,316 @@ Example: [0, 2, 5]`;
       }
     }
   }
+  
+  // ==================== VOICE CHAT MODE ====================
+  // Continuous voice conversation: speak → AI responds with TTS → listen again
+  
+  enterVoiceChatMode() {
+    if (!this.mobileSpeech) {
+      this.showToast('Voice input not available', true);
+      return;
+    }
+    
+    console.log('Entering voice chat mode');
+    this.voiceChatActive = true;
+    this.voiceChatState = 'LISTENING'; // LISTENING, PROCESSING, SPEAKING
+    this.voiceChatTranscript = '';
+    this.silenceTimeout = null;
+    
+    // Create and show overlay
+    this.showVoiceChatOverlay();
+    
+    // Start listening
+    this.startVoiceChatListening();
+  }
+  
+  exitVoiceChatMode() {
+    console.log('Exiting voice chat mode');
+    this.voiceChatActive = false;
+    this.voiceChatState = null;
+    
+    // Stop any ongoing speech recognition
+    if (this.mobileSpeech) {
+      this.mobileSpeech.stop().catch(() => {});
+    }
+    
+    // Stop any ongoing TTS
+    if (this.tts) {
+      this.tts.stop().catch(() => {});
+    }
+    
+    // Clear timeouts
+    if (this.silenceTimeout) {
+      clearTimeout(this.silenceTimeout);
+      this.silenceTimeout = null;
+    }
+    
+    // Remove overlay
+    this.hideVoiceChatOverlay();
+  }
+  
+  showVoiceChatOverlay() {
+    // Remove existing overlay if any
+    const existing = document.getElementById('voiceChatOverlay');
+    if (existing) existing.remove();
+    
+    const overlay = document.createElement('div');
+    overlay.id = 'voiceChatOverlay';
+    overlay.className = 'voice-chat-overlay';
+    overlay.innerHTML = `
+      <div class="voice-chat-content">
+        <button class="voice-chat-close" id="voiceChatClose">✕</button>
+        <div class="voice-chat-indicator" id="voiceChatIndicator">
+          <div class="voice-chat-icon listening">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+              <line x1="12" y1="19" x2="12" y2="23"></line>
+              <line x1="8" y1="23" x2="16" y2="23"></line>
+            </svg>
+          </div>
+        </div>
+        <div class="voice-chat-status" id="voiceChatStatus">Listening...</div>
+        <div class="voice-chat-transcript" id="voiceChatTranscript"></div>
+      </div>
+    `;
+    
+    document.body.appendChild(overlay);
+    
+    // Add close handler
+    document.getElementById('voiceChatClose').addEventListener('click', () => {
+      this.exitVoiceChatMode();
+    });
+    
+    // Tap anywhere on overlay to exit (except on content)
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) {
+        this.exitVoiceChatMode();
+      }
+    });
+  }
+  
+  hideVoiceChatOverlay() {
+    const overlay = document.getElementById('voiceChatOverlay');
+    if (overlay) {
+      overlay.classList.add('hiding');
+      setTimeout(() => overlay.remove(), 300);
+    }
+  }
+  
+  updateVoiceChatUI(state, transcript = '') {
+    const indicator = document.getElementById('voiceChatIndicator');
+    const status = document.getElementById('voiceChatStatus');
+    const transcriptEl = document.getElementById('voiceChatTranscript');
+    
+    if (!indicator || !status) return;
+    
+    // Update icon class
+    indicator.querySelector('.voice-chat-icon').className = 'voice-chat-icon ' + state.toLowerCase();
+    
+    // Update status text
+    const statusText = {
+      'LISTENING': 'Listening...',
+      'PROCESSING': 'Thinking...',
+      'SPEAKING': 'Speaking...'
+    };
+    status.textContent = statusText[state] || state;
+    
+    // Update transcript
+    if (transcriptEl && transcript) {
+      transcriptEl.textContent = transcript;
+    }
+  }
+  
+  async startVoiceChatListening() {
+    if (!this.voiceChatActive) return;
+    
+    this.voiceChatState = 'LISTENING';
+    this.voiceChatTranscript = '';
+    this.updateVoiceChatUI('LISTENING');
+    
+    try {
+      // Start speech recognition
+      await this.mobileSpeech.start({
+        language: navigator.language || 'en-US',
+        partialResults: true,
+        popup: false
+      });
+      
+      console.log('Voice chat: listening started');
+      
+      // Set up silence detection - reset on each partial result
+      this.resetSilenceTimer();
+      
+    } catch (e) {
+      console.error('Voice chat: failed to start listening', e);
+      this.showToast('Failed to start listening', true);
+      this.exitVoiceChatMode();
+    }
+  }
+  
+  resetSilenceTimer() {
+    // Clear existing timer
+    if (this.silenceTimeout) {
+      clearTimeout(this.silenceTimeout);
+    }
+    
+    // Set new timer - if no speech for 1.5s, send the message
+    this.silenceTimeout = setTimeout(() => {
+      if (this.voiceChatActive && this.voiceChatState === 'LISTENING' && this.voiceChatTranscript) {
+        console.log('Voice chat: silence detected, sending message');
+        this.sendVoiceChatMessage();
+      }
+    }, 1500);
+  }
+  
+  handleVoiceChatPartialResult(matches) {
+    if (!this.voiceChatActive || this.voiceChatState !== 'LISTENING') return;
+    
+    if (matches && matches.length > 0 && matches[0]) {
+      this.voiceChatTranscript = matches[0];
+      this.updateVoiceChatUI('LISTENING', this.voiceChatTranscript);
+      
+      // Reset silence timer on each result
+      this.resetSilenceTimer();
+    }
+  }
+  
+  async sendVoiceChatMessage() {
+    if (!this.voiceChatActive || !this.voiceChatTranscript) return;
+    
+    const message = this.voiceChatTranscript.trim();
+    if (!message) {
+      // No message, just resume listening
+      this.startVoiceChatListening();
+      return;
+    }
+    
+    this.voiceChatState = 'PROCESSING';
+    this.updateVoiceChatUI('PROCESSING', message);
+    
+    // Stop speech recognition
+    try {
+      await this.mobileSpeech.stop();
+    } catch (e) {
+      // Ignore stop errors
+    }
+    
+    console.log('Voice chat: sending message:', message);
+    
+    // Send via relay (same as regular messages)
+    if (this.relayEncrypted && this.relayWs) {
+      // Store callback to handle response
+      this.voiceChatPendingResponse = true;
+      
+      // Generate chat ID if needed
+      if (!this.currentChatId) {
+        this.currentChatId = this.generateId();
+      }
+      
+      // Send to desktop
+      this.sendRelayMessage({
+        type: 'user-message',
+        chatId: this.currentChatId,
+        content: message
+      });
+      
+    } else {
+      this.showToast('Not connected', true);
+      this.exitVoiceChatMode();
+    }
+  }
+  
+  async speakVoiceChatResponse(text) {
+    if (!this.voiceChatActive) return;
+    
+    this.voiceChatState = 'SPEAKING';
+    this.updateVoiceChatUI('SPEAKING');
+    
+    // Initialize TTS if needed
+    if (!this.tts && typeof Capacitor !== 'undefined' && Capacitor.Plugins?.TextToSpeech) {
+      this.tts = Capacitor.Plugins.TextToSpeech;
+    }
+    
+    if (!this.tts) {
+      console.log('TTS not available, resuming listening');
+      this.startVoiceChatListening();
+      return;
+    }
+    
+    try {
+      console.log('Voice chat: speaking response');
+      await this.tts.speak({
+        text: text,
+        lang: 'en-US',
+        rate: 1.0,
+        pitch: 1.0,
+        volume: 1.0,
+        category: 'playback'
+      });
+      
+      console.log('Voice chat: finished speaking');
+      
+      // Resume listening after TTS completes
+      if (this.voiceChatActive) {
+        this.startVoiceChatListening();
+      }
+      
+    } catch (e) {
+      console.error('Voice chat: TTS error', e);
+      // Resume listening even if TTS fails
+      if (this.voiceChatActive) {
+        this.startVoiceChatListening();
+      }
+    }
+  }
+  
+  // Called when we receive a response from the relay
+  handleVoiceChatResponse(content) {
+    if (!this.voiceChatActive || !this.voiceChatPendingResponse) return;
+    
+    this.voiceChatPendingResponse = false;
+    
+    // Strip markdown and clean up text for TTS
+    const cleanText = this.stripMarkdownForTTS(content);
+    
+    if (cleanText) {
+      this.speakVoiceChatResponse(cleanText);
+    } else {
+      // No text to speak, resume listening
+      this.startVoiceChatListening();
+    }
+  }
+  
+  stripMarkdownForTTS(text) {
+    if (!text) return '';
+    
+    return text
+      // Remove code blocks
+      .replace(/```[\s\S]*?```/g, 'code block omitted')
+      // Remove inline code
+      .replace(/`[^`]+`/g, '')
+      // Remove markdown links, keep text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      // Remove images
+      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
+      // Remove bold/italic markers
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/__([^_]+)__/g, '$1')
+      .replace(/_([^_]+)_/g, '$1')
+      // Remove headers
+      .replace(/^#+\s*/gm, '')
+      // Remove bullet points
+      .replace(/^[\s]*[-*+]\s+/gm, '')
+      // Remove numbered lists
+      .replace(/^[\s]*\d+\.\s+/gm, '')
+      // Collapse multiple newlines
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+  
+  // ==================== END VOICE CHAT MODE ====================
   
   // Image Upload
   initImageUpload() {

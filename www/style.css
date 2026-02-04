@@ -3160,3 +3160,126 @@ body.scanner-active .modal {
   display: none !important;
 }
 
+
+/* Voice Chat Mode Overlay */
+.voice-chat-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.95);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.3s ease;
+}
+
+.voice-chat-overlay.hiding {
+  animation: fadeOut 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.voice-chat-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px;
+  max-width: 90%;
+}
+
+.voice-chat-close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 10px;
+  z-index: 10001;
+}
+
+.voice-chat-close:hover {
+  color: var(--text-primary);
+}
+
+.voice-chat-indicator {
+  margin-bottom: 30px;
+}
+
+.voice-chat-icon {
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+}
+
+.voice-chat-icon svg {
+  width: 60px;
+  height: 60px;
+}
+
+.voice-chat-icon.listening {
+  background: rgba(16, 163, 127, 0.2);
+  color: #10a37f;
+  animation: pulse-listening 2s ease-in-out infinite;
+}
+
+.voice-chat-icon.processing {
+  background: rgba(245, 158, 11, 0.2);
+  color: #f59e0b;
+  animation: pulse-processing 1s ease-in-out infinite;
+}
+
+.voice-chat-icon.speaking {
+  background: rgba(59, 130, 246, 0.2);
+  color: #3b82f6;
+  animation: pulse-speaking 0.8s ease-in-out infinite;
+}
+
+@keyframes pulse-listening {
+  0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(16, 163, 127, 0.4); }
+  50% { transform: scale(1.05); box-shadow: 0 0 0 20px rgba(16, 163, 127, 0); }
+}
+
+@keyframes pulse-processing {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+@keyframes pulse-speaking {
+  0%, 100% { transform: scale(1); }
+  25% { transform: scale(1.1); }
+  75% { transform: scale(0.95); }
+}
+
+.voice-chat-status {
+  font-size: 24px;
+  color: var(--text-primary);
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.voice-chat-transcript {
+  font-size: 18px;
+  color: var(--text-secondary);
+  text-align: center;
+  max-width: 80%;
+  min-height: 50px;
+  line-height: 1.5;
+}
