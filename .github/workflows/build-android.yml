@@ -1,83 +1,73 @@
-   name: Build Android App Bundle                                             
-                                                                              
-   on:                                                                        
-     push:                                                                    
-       branches: [main]                                                       
-     pull_request:                                                            
-       branches: [main]                                                       
-     workflow_dispatch:                                                       
-                                                                              
-   jobs:                                                                      
-     build:                                                                   
-       runs-on: ubuntu-latest                                                 
-                                                                              
-       steps:                                                                 
-         - name: Checkout code                                                
-           uses: actions/checkout@v4                                          
-                                                                              
-         - name: Set up Node.js                                               
-           uses: actions/setup-node@v4                                        
-           with:                                                              
-             node-version: '20'                                               
-             cache: 'npm'                                                     
-                                                                              
-         - name: Set up Java                                                  
-           uses: actions/setup-java@v4                                        
-           with:                                                              
-             distribution: 'temurin'                                          
-             java-version: '21'                                               
-                                                                              
-         - name: Install dependencies                                         
-           run: npm ci                                                        
-                                                                              
-         - name: Sync Capacitor                                               
-           run: npx cap sync android                                          
-                                                                              
-         - name: Set up Android SDK                                           
-           uses: android-actions/setup-android@v3                             
-                                                                              
-         - name: Decode Keystore                                              
-           run: |                                                             
-             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d >              
- android/app/upload-keystore.jks                                              
-                                                                              
-         - name: Build Signed Release AAB                                     
-           run: |                                                             
-             cd android                                                       
-             chmod +x gradlew                                                 
-             ./gradlew bundleRelease \                                        
-                                                                              
- -Pandroid.injected.signing.store.file=$PWD/app/upload-keystore.jks \         
-               -Pandroid.injected.signing.store.password=${{                  
- secrets.KEYSTORE_PASSWORD }} \                                               
-               -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }}  
- \                                                                            
-               -Pandroid.injected.signing.key.password=${{                    
- secrets.KEY_PASSWORD }}                                                      
-                                                                              
-         - name: Build Signed Release APK                                     
-           run: |                                                             
-             cd android                                                       
-             ./gradlew assembleRelease \                                      
-                                                                              
- -Pandroid.injected.signing.store.file=$PWD/app/upload-keystore.jks \         
-               -Pandroid.injected.signing.store.password=${{                  
- secrets.KEYSTORE_PASSWORD }} \                                               
-               -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }}  
- \                                                                            
-               -Pandroid.injected.signing.key.password=${{                    
- secrets.KEY_PASSWORD }}                                                      
-                                                                              
-         - name: Upload AAB                                                   
-           uses: actions/upload-artifact@v4                                   
-           with:                                                              
-             name: clawgpt-release-aab                                        
-             path: android/app/build/outputs/bundle/release/app-release.aab   
-             retention-days: 30                                               
-                                                                              
-         - name: Upload APK                                                   
-           uses: actions/upload-artifact@v4                                   
-           with:                                                              
-             name: clawgpt-release-apk                                        
-             path: android/app/build/outputs/apk/release/app-release.apk      
-             retention-days: 30      
+name: Build Android App Bundle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Decode Keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
+
+      - name: Build Signed Release AAB
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew bundleRelease \
+            -Pandroid.injected.signing.store.file=$PWD/app/upload-keystore.jks \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
+
+      - name: Build Signed Release APK
+        run: |
+          cd android
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=$PWD/app/upload-keystore.jks \
+            -Pandroid.injected.signing.store.password=${{ secrets.KEYSTORE_PASSWORD }} \
+            -Pandroid.injected.signing.key.alias=${{ secrets.KEY_ALIAS }} \
+            -Pandroid.injected.signing.key.password=${{ secrets.KEY_PASSWORD }}
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawgpt-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: clawgpt-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30
