@@ -2682,6 +2682,13 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
+    // Handle stop generation acknowledgment
+    if (msg.type === 'generation-stopped') {
+      console.log('[Relay] Generation stopped by desktop');
+      this.handleGenerationStopped();
+      return;
+    }
+
     // Legacy sync messages - request full state instead
     if (msg.type === 'sync-meta' || msg.type === 'sync-data') {
       console.log('[Relay] Legacy sync, requesting full state');
@@ -2742,6 +2749,50 @@ window.CLAWGPT_CONFIG = {
         // Unknown status, just log it
         console.log('Unknown message status:', status, message);
     }
+  }
+
+  // Handle generation stopped acknowledgment from desktop
+  handleGenerationStopped() {
+    console.log('Desktop confirmed generation stopped - starting voice input');
+    
+    // Stop any current TTS
+    if (this.ttsUtterance) {
+      speechSynthesis.cancel();
+    }
+    
+    // Clear streaming state
+    this.streaming = false;
+    this.voiceChatState = 'LISTENING';
+    
+    // Start listening immediately
+    this.startVoiceChatListening();
+    this.updateVoiceChatUI('LISTENING', 'Tap mic to speak...');
+  }
+
+  // Interrupt current generation and start listening
+  interruptAndListen() {
+    console.log('Interrupting current generation to listen for new input');
+    
+    // Stop any current TTS immediately
+    if (this.ttsUtterance) {
+      speechSynthesis.cancel();
+    }
+    
+    // Send stop command to desktop via relay
+    if (this.relayEncrypted) {
+      this.sendRelayMessage({ type: 'stop-generation' });
+    }
+    
+    // Stop local streaming state
+    this.streaming = false;
+    this.voiceChatState = 'LISTENING';
+    
+    // Clear any pending voice chat checks
+    this.clearVoiceChatChecks();
+    
+    // Start listening for new input
+    this.startVoiceChatListening();
+    this.updateVoiceChatUI('LISTENING', 'Listening...');
   }
 
   // THIN CLIENT: Handle full state from desktop
@@ -6025,8 +6076,17 @@ Example: [0, 2, 5]`;
           this.pttDelayTimeout = null;
         }
 
-        // Check for double-tap
+        // Check for different tap scenarios
         const now = Date.now();
+        
+        // If we're in voice chat mode and AI is speaking/streaming, interrupt
+        if (this.voiceChatActive && (this.voiceChatState === 'PROCESSING' || this.streaming)) {
+          console.log('Mic tap during streaming - interrupting to listen');
+          this.interruptAndListen();
+          return;
+        }
+        
+        // Check for double-tap to enter voice chat mode
         if (now - this.lastTapTime < 400) {
           // Double tap detected!
           console.log('Double tap detected - entering voice chat mode');
@@ -6069,7 +6129,17 @@ Example: [0, 2, 5]`;
           this.pttDelayTimeout = null;
         }
 
+        // Check for different tap scenarios
         const now = Date.now();
+        
+        // If we're in voice chat mode and AI is speaking/streaming, interrupt
+        if (this.voiceChatActive && (this.voiceChatState === 'PROCESSING' || this.streaming)) {
+          console.log('Mic tap during streaming - interrupting to listen');
+          this.interruptAndListen();
+          return;
+        }
+        
+        // Check for double-tap to enter voice chat mode
         if (now - this.lastTapTime < 400) {
           console.log('Double tap detected - entering voice chat mode');
           this.lastTapTime = 0;
@@ -6478,6 +6548,9 @@ Example: [0, 2, 5]`;
     this.voiceChatState = 'PROCESSING';
     this.updateVoiceChatUI('PROCESSING', message);
     console.log('Voice chat: set state to PROCESSING');
+    
+    // Track when we sent this message to avoid replaying old responses
+    this.voiceChatMessageTime = Date.now();
 
     // Stop speech recognition (fire and forget - don't await since it can hang)
     console.log('Voice chat: stopping speech recognition...');
@@ -6618,13 +6691,22 @@ Example: [0, 2, 5]`;
     // Check if there's an assistant message we haven't spoken yet
     const chat = this.chats[this.currentChatId];
     if (chat && chat.messages && chat.messages.length > 0) {
-      // Find the last assistant message
+      // Find the MOST RECENT assistant message that we haven't spoken
       for (let i = chat.messages.length - 1; i >= 0; i--) {
         const msg = chat.messages[i];
         if (msg.role === 'assistant' && msg.content) {
-          console.log('Voice chat: found assistant message to speak');
-          this.handleVoiceChatResponse(msg.content);
-          return;
+          // Check if this is a NEW message (after we started processing)
+          const msgTime = msg.timestamp || 0;
+          const voiceChatStartTime = this.voiceChatMessageTime || 0;
+          
+          if (msgTime > voiceChatStartTime) {
+            console.log('Voice chat: found NEW assistant message to speak');
+            this.handleVoiceChatResponse(msg.content);
+            return;
+          } else {
+            console.log('Voice chat: skipping old assistant message');
+            break; // Don't replay old messages
+          }
         }
         if (msg.role === 'user') {
           // Don't look past the last user message
