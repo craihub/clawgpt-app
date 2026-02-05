@@ -7918,6 +7918,12 @@ Example: [0, 2, 5]`;
 
     // If streaming just ended and voice chat is waiting for a response
     if (wasStreaming && !this.streaming && this.voiceChatActive && this.voiceChatPendingResponse) {
+      // Skip if streaming TTS already handled this (check if we spoke anything)
+      if (this.ttsSpokenText || this.ttsSpeaking || (this.ttsQueue && this.ttsQueue.length > 0)) {
+        console.log('Streaming ended - streaming TTS already handling response');
+        return;
+      }
+      
       console.log('Streaming ended, checking for response to speak');
       // Get the last assistant message from current chat
       const chat = this.chats[this.currentChatId];
