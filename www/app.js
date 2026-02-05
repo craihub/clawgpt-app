@@ -2819,6 +2819,10 @@ window.CLAWGPT_CONFIG = {
     this.clearVoiceChatChecks();
     this.voiceChatPendingResponse = false;
     
+    // Clear stream buffer to prevent replaying old response
+    this.streamBuffer = '';
+    this.streaming = false;
+    
     // Reset to listening state and start listening immediately
     this.voiceChatState = 'LISTENING';
     this.startVoiceChatListening();
@@ -3129,8 +3133,16 @@ window.CLAWGPT_CONFIG = {
 
       // If voice chat is waiting and streaming just ended (content is complete)
       if (this.voiceChatActive && this.voiceChatPendingResponse && msg.done) {
-        console.log('Streaming done, triggering voice chat response');
-        this.handleVoiceChatResponse(msg.content);
+        // Check timestamp to avoid replaying old responses after interrupt
+        const msgTime = msg.timestamp || Date.now();
+        const voiceChatStartTime = this.voiceChatMessageTime || 0;
+        
+        if (msgTime >= voiceChatStartTime) {
+          console.log('Streaming done, triggering voice chat response');
+          this.handleVoiceChatResponse(msg.content);
+        } else {
+          console.log('Ignoring stale streaming response after interrupt');
+        }
       }
       return;
     }
@@ -3172,8 +3184,16 @@ window.CLAWGPT_CONFIG = {
         // If voice chat mode is active, speak the response
         console.log('Assistant message received, voiceChatActive:', this.voiceChatActive, 'pendingResponse:', this.voiceChatPendingResponse);
         if (this.voiceChatActive && this.voiceChatPendingResponse) {
-          console.log('Triggering voice chat response with content length:', newMsg.content?.length);
-          this.handleVoiceChatResponse(newMsg.content);
+          // Check if this response is for our current pending message (not a stale one)
+          const msgTime = newMsg.timestamp || Date.now();
+          const voiceChatStartTime = this.voiceChatMessageTime || 0;
+          
+          if (msgTime >= voiceChatStartTime) {
+            console.log('Triggering voice chat response with content length:', newMsg.content?.length);
+            this.handleVoiceChatResponse(newMsg.content);
+          } else {
+            console.log('Ignoring stale voice chat response (msg time:', msgTime, 'vs start time:', voiceChatStartTime, ')');
+          }
         }
       }
 
@@ -7749,8 +7769,16 @@ Example: [0, 2, 5]`;
       if (chat && chat.messages && chat.messages.length > 0) {
         const lastMsg = chat.messages[chat.messages.length - 1];
         if (lastMsg.role === 'assistant' && lastMsg.content) {
-          console.log('Found assistant message, triggering voice response');
-          this.handleVoiceChatResponse(lastMsg.content);
+          // Check timestamp to avoid replaying old responses after interrupt
+          const msgTime = lastMsg.timestamp || Date.now();
+          const voiceChatStartTime = this.voiceChatMessageTime || 0;
+          
+          if (msgTime >= voiceChatStartTime) {
+            console.log('Found assistant message, triggering voice response');
+            this.handleVoiceChatResponse(lastMsg.content);
+          } else {
+            console.log('Ignoring stale assistant message after interrupt');
+          }
         }
       }
     }
