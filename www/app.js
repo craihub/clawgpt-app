@@ -2795,6 +2795,35 @@ window.CLAWGPT_CONFIG = {
     this.updateVoiceChatUI('LISTENING', 'Listening...');
   }
 
+  // Interrupt voice chat AI speech and start listening (for big mic tap)
+  interruptVoiceChatAndListen() {
+    console.log('Interrupting voice chat AI speech to listen for new input');
+    
+    // Stop current TTS immediately
+    if (this.tts) {
+      this.tts.stop().catch(() => {});
+    }
+    
+    // Also stop web TTS if active
+    if (this.ttsUtterance) {
+      speechSynthesis.cancel();
+    }
+    
+    // Send stop command to desktop via relay (in case streaming is active)
+    if (this.relayEncrypted) {
+      this.sendRelayMessage({ type: 'stop-generation' });
+    }
+    
+    // Clear voice chat checks and timeouts
+    this.clearVoiceChatChecks();
+    this.voiceChatPendingResponse = false;
+    
+    // Reset to listening state and start listening immediately
+    this.voiceChatState = 'LISTENING';
+    this.startVoiceChatListening();
+    this.updateVoiceChatUI('LISTENING', 'Listening...');
+  }
+
   // THIN CLIENT: Handle full state from desktop
   handleFullState(state) {
     if (!state || !state.chats) return;
@@ -6411,6 +6440,17 @@ Example: [0, 2, 5]`;
     // Add close handler
     document.getElementById('voiceChatClose').addEventListener('click', () => {
       this.exitVoiceChatMode();
+    });
+
+    // Add click handler for the big voice chat indicator (mic icon)
+    document.getElementById('voiceChatIndicator').addEventListener('click', () => {
+      console.log('Voice chat indicator tapped, current state:', this.voiceChatState);
+      
+      // If AI is speaking, interrupt and start listening
+      if (this.voiceChatState === 'SPEAKING') {
+        console.log('Interrupting AI speech to listen for new input');
+        this.interruptVoiceChatAndListen();
+      }
     });
 
     // Tap anywhere on overlay to exit (except on content)
