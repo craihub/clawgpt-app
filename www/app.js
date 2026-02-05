@@ -2675,6 +2675,13 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
+    // Handle message status updates
+    if (msg.type === 'message-status') {
+      console.log('[Relay] Received message status:', msg.status);
+      this.handleMessageStatus(msg);
+      return;
+    }
+
     // Legacy sync messages - request full state instead
     if (msg.type === 'sync-meta' || msg.type === 'sync-data') {
       console.log('[Relay] Legacy sync, requesting full state');
@@ -2703,6 +2710,38 @@ window.CLAWGPT_CONFIG = {
     if (!this.relayEncrypted) return;
     this.sendRelayMessage({ type: 'request-state' });
     console.log('[Relay] Requested full state from desktop');
+  }
+
+  // Handle message status updates from desktop
+  handleMessageStatus(statusData) {
+    const { chatId, status, message } = statusData;
+    
+    // Show status feedback to user
+    switch (status) {
+      case 'queued':
+        this.setStatus('Queued...', false);
+        if (message) this.showToast(message, false);
+        break;
+      case 'reconnecting':
+        this.setStatus('Reconnecting...', false);
+        if (message) this.showToast(message, false);
+        break;
+      case 'connected':
+        this.setStatus('Connected', true);
+        if (message) this.showToast(message, false);
+        break;
+      case 'failed':
+        this.setStatus('Connection Failed', false);
+        this.showToast(message || 'Connection failed', true);
+        break;
+      case 'error':
+        this.setStatus('Error', false);
+        this.showToast(message || 'An error occurred', true);
+        break;
+      default:
+        // Unknown status, just log it
+        console.log('Unknown message status:', status, message);
+    }
   }
 
   // THIN CLIENT: Handle full state from desktop
