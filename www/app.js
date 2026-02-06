@@ -1152,8 +1152,17 @@ window.CLAWGPT_CONFIG = {
             this.showToast('Connecting to desktop...');
             await this.joinRelayAsClient({ server: relay, channel: room, pubkey });
           } else if (gateway) {
-            // Local network mode - redirect to the URL
-            window.location.href = cleanedContent;
+            // Local network mode - only allow http/https URLs (block javascript: etc)
+            try {
+              const parsedUrl = new URL(cleanedContent);
+              if (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') {
+                window.location.href = cleanedContent;
+              } else {
+                this.showScanDebug(scanLog, 'Invalid URL protocol: ' + parsedUrl.protocol);
+              }
+            } catch (urlErr) {
+              this.showScanDebug(scanLog, 'Invalid URL: ' + urlErr.message);
+            }
           } else {
             this.showScanDebug(scanLog, 'Missing params');
           }
@@ -1181,22 +1190,43 @@ window.CLAWGPT_CONFIG = {
     const log = logLines.join('\n');
     window._lastScanLog = log;
 
-    // Create debug modal
+    // Create debug modal (using textContent to prevent XSS)
     const modal = document.createElement('div');
     modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.9);z-index:99999;padding:20px;overflow:auto;';
-    modal.innerHTML = `
-      <div style="background:#1a1a1a;border-radius:8px;padding:20px;max-width:600px;margin:0 auto;">
-        <h3 style="color:#e74c3c;margin:0 0 10px;">QR Scan Failed: ${errorMsg}</h3>
-        <pre style="background:#000;color:#0f0;padding:10px;border-radius:4px;overflow:auto;max-height:400px;font-size:11px;white-space:pre-wrap;word-break:break-all;">${log}</pre>
-        <div style="margin-top:15px;display:flex;gap:10px;">
-          <button id="copyLogBtn" style="flex:1;padding:12px;background:#3498db;color:white;border:none;border-radius:4px;font-size:14px;">Copy Log</button>
-          <button id="closeDebugBtn" style="flex:1;padding:12px;background:#666;color:white;border:none;border-radius:4px;font-size:14px;">Close</button>
-        </div>
-      </div>
-    `;
+
+    const container = document.createElement('div');
+    container.style.cssText = 'background:#1a1a1a;border-radius:8px;padding:20px;max-width:600px;margin:0 auto;';
+
+    const heading = document.createElement('h3');
+    heading.style.cssText = 'color:#e74c3c;margin:0 0 10px;';
+    heading.textContent = 'QR Scan Failed: ' + errorMsg;
+
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'background:#000;color:#0f0;padding:10px;border-radius:4px;overflow:auto;max-height:400px;font-size:11px;white-space:pre-wrap;word-break:break-all;';
+    pre.textContent = log;
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'margin-top:15px;display:flex;gap:10px;';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.id = 'copyLogBtn';
+    copyBtn.style.cssText = 'flex:1;padding:12px;background:#3498db;color:white;border:none;border-radius:4px;font-size:14px;';
+    copyBtn.textContent = 'Copy Log';
+
+    const closeBtn = document.createElement('button');
+    closeBtn.id = 'closeDebugBtn';
+    closeBtn.style.cssText = 'flex:1;padding:12px;background:#666;color:white;border:none;border-radius:4px;font-size:14px;';
+    closeBtn.textContent = 'Close';
+
+    btnRow.appendChild(copyBtn);
+    btnRow.appendChild(closeBtn);
+    container.appendChild(heading);
+    container.appendChild(pre);
+    container.appendChild(btnRow);
+    modal.appendChild(container);
     document.body.appendChild(modal);
 
-    document.getElementById('copyLogBtn').onclick = () => {
+    copyBtn.onclick = () => {
       navigator.clipboard.writeText(log).then(() => {
         this.showToast('Log copied to clipboard');
       }).catch(() => {
@@ -1211,7 +1241,7 @@ window.CLAWGPT_CONFIG = {
       });
     };
 
-    document.getElementById('closeDebugBtn').onclick = () => {
+    closeBtn.onclick = () => {
       modal.remove();
     };
   }
@@ -2682,6 +2712,13 @@ window.CLAWGPT_CONFIG = {
     this.applyTheme();
 
     // Event listeners
+    // Delegated click handler for images (avoid inline onclick XSS)
+    this.elements.messagesContainer.addEventListener('click', (e) => {
+      const img = e.target.closest('.clickable-img');
+      if (img && img.src && img.src.startsWith('data:')) {
+        window.open(img.src, '_blank');
+      }
+    });
     this.elements.sendBtn.addEventListener('click', () => this.sendMessage());
     this.elements.messageInput.addEventListener('keydown', (e) => {
       // On mobile: Enter = new line, send via button only
@@ -4715,9 +4752,10 @@ Example: [0, 2, 5]`;
 
       if (sessionImgs && sessionImgs.length > 0) {
         // Have actual images from current session
-        imagesHtml = `<div class="message-images">${sessionImgs.map(img =>
-          `<img src="${img.base64}" alt="${this.escapeHtml(img.name || 'image')}" title="${this.escapeHtml(img.name || 'image')}" onclick="window.open('${img.base64}', '_blank')">`
-        ).join('')}</div>`;
+        imagesHtml = `<div class="message-images">${sessionImgs.map((img, i) => {
+          const safeBase64 = img.base64 && img.base64.startsWith('data:') ? img.base64 : '';
+          return `<img src="${safeBase64}" alt="${this.escapeHtml(img.name || 'image')}" title="${this.escapeHtml(img.name || 'image')}" data-img-idx="${i}" class="clickable-img">`;
+        }).join('')}</div>`;
       } else if (msg.imageNames && msg.imageNames.length > 0) {
         // Historical message - show filenames
         imagesHtml = `<div class="message-images-placeholder">${msg.imageNames.map(name =>
@@ -4728,9 +4766,10 @@ Example: [0, 2, 5]`;
         imagesHtml = `<div class="message-images-placeholder">🖼️ ${msg.imageCount} image${msg.imageCount > 1 ? 's' : ''} attached</div>`;
       } else if (msg.images && msg.images.length > 0) {
         // Legacy format (old chats that still have images stored)
-        imagesHtml = `<div class="message-images">${msg.images.map(img =>
-          `<img src="${img.base64}" alt="Uploaded image" onclick="window.open('${img.base64}', '_blank')">`
-        ).join('')}</div>`;
+        imagesHtml = `<div class="message-images">${msg.images.map((img, i) => {
+          const safeBase64 = img.base64 && img.base64.startsWith('data:') ? img.base64 : '';
+          return `<img src="${safeBase64}" alt="Uploaded image" data-img-idx="${i}" class="clickable-img">`;
+        }).join('')}</div>`;
       }
 
       // Render text files if present
@@ -5294,7 +5333,11 @@ Example: [0, 2, 5]`;
                    'width', 'height', 'rx', 'points', 'cx', 'cy', 'r', 'data-language']
       });
     }
-    return html;
+    // DOMPurify not loaded — strip all HTML tags as fallback
+    console.warn('DOMPurify not loaded — using textContent fallback');
+    const div = document.createElement('div');
+    div.textContent = html;
+    return div.innerHTML;
   }
 
   // Voice input
