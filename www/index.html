@@ -72,18 +72,6 @@
           </svg>
           <span class="btn-text">Help</span>
         </button>
-        <button class="scan-qr-btn" id="sidebarScanQrBtn" title="Scan QR code to pair" style="display: none;">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <rect x="3" y="3" width="7" height="7"></rect>
-            <rect x="14" y="3" width="7" height="7"></rect>
-            <rect x="3" y="14" width="7" height="7"></rect>
-            <rect x="14" y="14" width="3" height="3"></rect>
-            <rect x="18" y="14" width="3" height="3"></rect>
-            <rect x="14" y="18" width="3" height="3"></rect>
-            <rect x="18" y="18" width="3" height="3"></rect>
-          </svg>
-          <span class="btn-text">Scan QR</span>
-        </button>
         <button class="collapse-btn" id="collapseBtn" title="Collapse sidebar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="11 17 6 12 11 7"></polyline>
@@ -264,8 +252,9 @@
           <span class="setting-hint">Export saves all chats to a JSON file. Import merges chats from a file.</span>
         </div>
         <div class="settings-divider"></div>
-        <div class="settings-section-title">Mobile Access</div>
+        <div class="settings-section-title">Pairing</div>
         <div class="form-group mobile-access">
+          <!-- Desktop: Show QR for phone to scan -->
           <div class="qr-container" id="qrContainer">
             <div class="qr-placeholder" id="qrPlaceholder">
               <button class="data-btn" id="showQrBtn">
@@ -283,8 +272,24 @@
             </div>
             <div class="qr-code" id="qrCode" style="display:none;"></div>
           </div>
-          <span class="setting-hint">Scan with your phone to open ClawGPT on mobile (same WiFi network)</span>
-          <span class="setting-hint warning">⚠️ Don't share this QR code — it contains your auth token</span>
+          <!-- Mobile: Scan QR from desktop -->
+          <div class="scan-qr-container" id="scanQrContainer" style="display:none;">
+            <button class="data-btn" id="settingsScanQrBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+                <rect x="14" y="14" width="3" height="3"></rect>
+                <rect x="18" y="14" width="3" height="3"></rect>
+                <rect x="14" y="18" width="3" height="3"></rect>
+                <rect x="18" y="18" width="3" height="3"></rect>
+              </svg>
+              Scan QR to Pair
+            </button>
+            <span class="setting-hint">Scan the QR code shown on desktop ClawGPT to pair devices</span>
+          </div>
+          <span class="setting-hint" id="qrDesktopHint">Scan with your phone to open ClawGPT on mobile (same WiFi network)</span>
+          <span class="setting-hint warning" id="qrWarningHint">⚠️ Don't share this QR code — it contains your auth token</span>
           <div class="mobile-url" id="mobileUrl"></div>
         </div>
         <div class="settings-divider"></div>
@@ -382,16 +387,40 @@
     </div>
   </div>
 
-  <!-- Shortcuts Modal -->
+  <!-- Help Modal -->
   <div class="modal" id="shortcutsModal">
     <div class="modal-content modal-small">
       <div class="modal-header">
-        <h2>Keyboard Shortcuts</h2>
+        <h2>Help</h2>
         <button class="close-btn" id="closeShortcuts">&times;</button>
       </div>
       <div class="modal-body shortcuts-body">
-        <div class="shortcut-group">
-          <div class="shortcut-group-title">General</div>
+        <!-- Mobile gestures (shown on mobile) -->
+        <div class="shortcut-group" id="mobileGesturesGroup" style="display:none;">
+          <div class="shortcut-group-title">Gestures</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Open sidebar</span>
+            <span class="shortcut-keys"><kbd>Swipe right</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Close sidebar</span>
+            <span class="shortcut-keys"><kbd>Swipe left</kbd></span>
+          </div>
+        </div>
+        <div class="shortcut-group" id="voiceGroup" style="display:none;">
+          <div class="shortcut-group-title">Voice</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Push to talk</span>
+            <span class="shortcut-keys"><kbd>Hold mic</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Conversation mode</span>
+            <span class="shortcut-keys"><kbd>Double-tap mic</kbd></span>
+          </div>
+        </div>
+        <!-- Desktop shortcuts -->
+        <div class="shortcut-group" id="desktopShortcutsGroup">
+          <div class="shortcut-group-title">Keyboard</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Send message</span>
             <span class="shortcut-keys"><kbd>Enter</kbd></span>
@@ -405,7 +434,7 @@
             <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd></span>
           </div>
         </div>
-        <div class="shortcut-group">
+        <div class="shortcut-group" id="searchShortcutsGroup">
           <div class="shortcut-group-title">Search</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Open search</span>
@@ -424,7 +453,7 @@
             <span class="shortcut-keys"><kbd>Enter</kbd></span>
           </div>
         </div>
-        <div class="shortcut-group">
+        <div class="shortcut-group" id="editingShortcutsGroup">
           <div class="shortcut-group-title">Editing</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Send edited message</span>
@@ -438,7 +467,7 @@
         <div class="shortcut-group">
           <div class="shortcut-group-title">This modal</div>
           <div class="shortcut-row">
-            <span class="shortcut-desc">Show shortcuts</span>
+            <span class="shortcut-desc">Show help</span>
             <span class="shortcut-keys"><kbd>?</kbd></span>
           </div>
         </div>

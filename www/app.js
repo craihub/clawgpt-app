@@ -2901,14 +2901,42 @@ window.CLAWGPT_CONFIG = {
       searchBtnCollapsed.addEventListener('click', () => this.openSearch());
     }
 
-    // Scan QR button in sidebar (mobile only)
-    const sidebarScanQrBtn = document.getElementById('sidebarScanQrBtn');
-    if (sidebarScanQrBtn && this.isMobile) {
-      sidebarScanQrBtn.style.display = '';
-      sidebarScanQrBtn.addEventListener('click', () => {
-        this.closeSidebar();
-        this.scanQRCode();
-      });
+    // Scan QR button in settings (mobile only)
+    const settingsScanQrBtn = document.getElementById('settingsScanQrBtn');
+    const scanQrContainer = document.getElementById('scanQrContainer');
+    const qrContainer = document.getElementById('qrContainer');
+    const qrDesktopHint = document.getElementById('qrDesktopHint');
+    const qrWarningHint = document.getElementById('qrWarningHint');
+    
+    if (this.isMobile) {
+      // Mobile: show scan button, hide QR generator
+      if (scanQrContainer) scanQrContainer.style.display = '';
+      if (qrContainer) qrContainer.style.display = 'none';
+      if (qrDesktopHint) qrDesktopHint.style.display = 'none';
+      if (qrWarningHint) qrWarningHint.style.display = 'none';
+      if (settingsScanQrBtn) {
+        settingsScanQrBtn.addEventListener('click', () => {
+          this.closeSettings();
+          this.scanQRCode();
+        });
+      }
+    }
+    
+    // Show appropriate help sections based on platform
+    const mobileGesturesGroup = document.getElementById('mobileGesturesGroup');
+    const voiceGroup = document.getElementById('voiceGroup');
+    const desktopShortcutsGroup = document.getElementById('desktopShortcutsGroup');
+    const searchShortcutsGroup = document.getElementById('searchShortcutsGroup');
+    const editingShortcutsGroup = document.getElementById('editingShortcutsGroup');
+    
+    if (this.isMobile) {
+      // Show mobile-specific sections
+      if (mobileGesturesGroup) mobileGesturesGroup.style.display = '';
+      if (voiceGroup) voiceGroup.style.display = '';
+      // Hide desktop keyboard shortcuts
+      if (desktopShortcutsGroup) desktopShortcutsGroup.style.display = 'none';
+      if (searchShortcutsGroup) searchShortcutsGroup.style.display = 'none';
+      if (editingShortcutsGroup) editingShortcutsGroup.style.display = 'none';
     }
 
     // Apply saved collapse state
@@ -7106,11 +7134,42 @@ Example: [0, 2, 5]`;
 
   // THIN CLIENT: Send message to desktop for processing
   sendMessageViaRelay(text) {
+    // Gather attachments before clearing
+    const hasImages = this.pendingImages && this.pendingImages.length > 0;
+    const hasTextFiles = this.pendingTextFiles && this.pendingTextFiles.length > 0;
+    
+    // Build attachments for relay (same format as gateway)
+    let attachments = null;
+    if (hasImages) {
+      attachments = this.pendingImages.map(img => {
+        const parsed = this.parseDataUrl(img.base64);
+        return {
+          type: 'image',
+          mimeType: parsed.mimeType,
+          content: parsed.content // base64 without data: prefix
+        };
+      });
+    }
+    
+    // Build text file content
+    let fullText = text;
+    if (hasTextFiles) {
+      const fileContents = this.pendingTextFiles.map(f =>
+        `--- ${f.name} ---\n${f.content}\n--- end ${f.name} ---`
+      ).join('\n\n');
+      fullText = text ? `${fileContents}\n\n${text}` : fileContents;
+    }
+    
     // Clear input and reset placeholder (in case voice input left something)
     this.elements.messageInput.value = '';
     this.elements.messageInput.placeholder = 'Message ClawGPT...';
     this.elements.messageInput.style.height = 'auto';
     this.elements.sendBtn.disabled = true;
+    
+    // Clear pending attachments and preview
+    this.pendingImages = [];
+    this.pendingTextFiles = [];
+    this.updateAttachmentPreview();
 
     // Generate chat ID if needed
     if (!this.currentChatId) {
@@ -7118,13 +7177,20 @@ Example: [0, 2, 5]`;
     }
 
     // Send to desktop - it will create the chat, forward to gateway, and broadcast updates
-    this.sendRelayMessage({
+    const message = {
       type: 'user-message',
       chatId: this.currentChatId,
-      content: text
-    });
+      content: fullText
+    };
+    
+    // Include attachments if present
+    if (attachments && attachments.length > 0) {
+      message.attachments = attachments;
+    }
+    
+    this.sendRelayMessage(message);
 
-    console.log('[Relay] Sent message to desktop');
+    console.log('[Relay] Sent message to desktop', attachments ? `with ${attachments.length} attachment(s)` : '');
 
     // Show waiting indicator
     this.streaming = true;
