@@ -102,7 +102,7 @@
       <div class="messages" id="messages">
         <div class="welcome" id="welcome">
           <h2>ClawGPT</h2>
-          <p>A simple ChatGPT-like interface for OpenClaw</p>
+          <p>A familiar UI for OpenClaw with extra features</p>
         </div>
       </div>
 
@@ -252,8 +252,9 @@
           <span class="setting-hint">Export saves all chats to a JSON file. Import merges chats from a file.</span>
         </div>
         <div class="settings-divider"></div>
-        <div class="settings-section-title">Mobile Access</div>
+        <div class="settings-section-title">Pairing</div>
         <div class="form-group mobile-access">
+          <!-- Desktop: Show QR for phone to scan -->
           <div class="qr-container" id="qrContainer">
             <div class="qr-placeholder" id="qrPlaceholder">
               <button class="data-btn" id="showQrBtn">
@@ -271,9 +272,49 @@
             </div>
             <div class="qr-code" id="qrCode" style="display:none;"></div>
           </div>
-          <span class="setting-hint">Scan with your phone to open ClawGPT on mobile (same WiFi network)</span>
-          <span class="setting-hint warning">⚠️ Don't share this QR code — it contains your auth token</span>
+          <!-- Mobile: Scan QR from desktop -->
+          <div class="scan-qr-container" id="scanQrContainer" style="display:none;">
+            <button class="data-btn" id="settingsScanQrBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <rect x="3" y="3" width="7" height="7"></rect>
+                <rect x="14" y="3" width="7" height="7"></rect>
+                <rect x="3" y="14" width="7" height="7"></rect>
+                <rect x="14" y="14" width="3" height="3"></rect>
+                <rect x="18" y="14" width="3" height="3"></rect>
+                <rect x="14" y="18" width="3" height="3"></rect>
+                <rect x="18" y="18" width="3" height="3"></rect>
+              </svg>
+              Scan QR to Pair
+            </button>
+            <span class="setting-hint">Scan the QR code shown on desktop ClawGPT to pair devices</span>
+          </div>
+          <span class="setting-hint" id="qrDesktopHint">Scan with your phone to open ClawGPT on mobile (same WiFi network)</span>
+          <span class="setting-hint warning" id="qrWarningHint">⚠️ Don't share this QR code — it contains your auth token</span>
           <div class="mobile-url" id="mobileUrl"></div>
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-section-title">Security</div>
+        <div class="form-group">
+          <span class="setting-hint" id="verifyCodeDisplay">Verification: Not connected</span>
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-section-title">Debug</div>
+        <div class="form-group data-actions">
+          <button class="data-btn" id="copyLogsBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+            </svg>
+            Copy Logs
+          </button>
+          <button class="data-btn" id="clearLogsBtn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+            Clear Logs
+          </button>
+          <span class="setting-hint" id="logCount">Logs: 0 entries</span>
         </div>
         <div class="settings-actions">
           <button class="save-btn" id="saveSettingsBtn">Save</button>
@@ -346,16 +387,40 @@
     </div>
   </div>
 
-  <!-- Shortcuts Modal -->
+  <!-- Help Modal -->
   <div class="modal" id="shortcutsModal">
     <div class="modal-content modal-small">
       <div class="modal-header">
-        <h2>Keyboard Shortcuts</h2>
+        <h2>Help</h2>
         <button class="close-btn" id="closeShortcuts">&times;</button>
       </div>
       <div class="modal-body shortcuts-body">
-        <div class="shortcut-group">
-          <div class="shortcut-group-title">General</div>
+        <!-- Mobile gestures (shown on mobile) -->
+        <div class="shortcut-group" id="mobileGesturesGroup" style="display:none;">
+          <div class="shortcut-group-title">Gestures</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Open sidebar</span>
+            <span class="shortcut-keys"><kbd>Swipe right</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Close sidebar</span>
+            <span class="shortcut-keys"><kbd>Swipe left</kbd></span>
+          </div>
+        </div>
+        <div class="shortcut-group" id="voiceGroup" style="display:none;">
+          <div class="shortcut-group-title">Voice</div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Push to talk</span>
+            <span class="shortcut-keys"><kbd>Hold mic</kbd></span>
+          </div>
+          <div class="shortcut-row">
+            <span class="shortcut-desc">Conversation mode</span>
+            <span class="shortcut-keys"><kbd>Double-tap mic</kbd></span>
+          </div>
+        </div>
+        <!-- Desktop shortcuts -->
+        <div class="shortcut-group" id="desktopShortcutsGroup">
+          <div class="shortcut-group-title">Keyboard</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Send message</span>
             <span class="shortcut-keys"><kbd>Enter</kbd></span>
@@ -369,7 +434,7 @@
             <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd></span>
           </div>
         </div>
-        <div class="shortcut-group">
+        <div class="shortcut-group" id="searchShortcutsGroup">
           <div class="shortcut-group-title">Search</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Open search</span>
@@ -388,7 +453,7 @@
             <span class="shortcut-keys"><kbd>Enter</kbd></span>
           </div>
         </div>
-        <div class="shortcut-group">
+        <div class="shortcut-group" id="editingShortcutsGroup">
           <div class="shortcut-group-title">Editing</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Send edited message</span>
@@ -402,7 +467,7 @@
         <div class="shortcut-group">
           <div class="shortcut-group-title">This modal</div>
           <div class="shortcut-row">
-            <span class="shortcut-desc">Show shortcuts</span>
+            <span class="shortcut-desc">Show help</span>
             <span class="shortcut-keys"><kbd>?</kbd></span>
           </div>
         </div>
@@ -461,6 +526,16 @@
           </div>
           <button class="save-btn" id="setupSaveBtn">Connect</button>
         </div>
+        
+        <!-- Debug: Copy Logs + Reset buttons -->
+        <div class="setup-debug" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color); display: flex; gap: 10px;">
+          <button class="copy-logs-btn" id="setupCopyLogsBtn" style="flex: 1; padding: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 6px; cursor: pointer;">
+            Copy Logs
+          </button>
+          <button class="reset-btn" id="setupResetBtn" style="flex: 1; padding: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 6px; cursor: pointer;">
+            Reset
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -475,8 +550,13 @@
   <script src="lib/nacl.min.js"></script>
   <script src="lib/nacl-util.min.js"></script>
   <script src="lib/relay-crypto.js"></script>
+  <script src="lib/purify.min.js"></script>
   
   <script src="config.js" onerror="/* config.js is optional */"></script>
+  <script src="error-handler.js"></script>
+  <script src="chat-storage.js"></script>
+  <script src="file-memory-storage.js"></script>
+  <script src="memory-storage.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
