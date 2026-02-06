@@ -2009,6 +2009,12 @@ window.CLAWGPT_CONFIG = {
       statusEl.classList.add('connected');
       statusEl.title = `Connected via encrypted relay. Verification: ${verifyCode}`;
     }
+    
+    // Update settings verification display
+    const verifyDisplay = document.getElementById('verifyCodeDisplay');
+    if (verifyDisplay) {
+      verifyDisplay.textContent = `Verification: ${verifyCode}`;
+    }
   }
 
   // Ensure relay connection is finalized (modal closed, sync started)
