@@ -7169,7 +7169,7 @@ Example: [0, 2, 5]`;
     // Clear pending attachments and preview
     this.pendingImages = [];
     this.pendingTextFiles = [];
-    this.updateAttachmentPreview();
+    this.updateFilePreview();
 
     // Generate chat ID if needed
     if (!this.currentChatId) {
