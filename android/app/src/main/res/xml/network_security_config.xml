@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+      ClawGPT connects to local OpenClaw gateways on LAN IPs (ws://).
+      Android's network_security_config doesn't support IP range matching,
+      so we allow cleartext globally but enforce HTTPS at the app level
+      for non-local connections (relay uses wss://, all CDN resources use https://).
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
