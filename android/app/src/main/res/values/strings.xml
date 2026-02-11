@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">ClawGPT</string>
-    <string name="title_activity_main">ClawGPT</string>
+    <string name="app_name">ClawGT</string>
+    <string name="title_activity_main">ClawGT</string>
     <string name="package_name">com.curvereality.clawgpt</string>
     <string name="custom_url_scheme">com.curvereality.clawgpt</string>
 </resources>
