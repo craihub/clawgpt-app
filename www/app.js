@@ -2670,6 +2670,19 @@ window.CLAWGPT_CONFIG = {
       setupSaveBtn.addEventListener('click', () => this.connectFromSetup());
     }
 
+    // Setup screen Scan QR button (mobile first-run only)
+    const setupScanQrBtn = document.getElementById('setupScanQrBtn');
+    const setupScanOrDivider = document.getElementById('setupScanOrDivider');
+    if (setupScanQrBtn) {
+      if (this.isMobile) {
+        setupScanQrBtn.addEventListener('click', () => this.scanQRCode());
+      } else {
+        // Hide scan button on desktop - no camera to scan with
+        setupScanQrBtn.style.display = 'none';
+        if (setupScanOrDivider) setupScanOrDivider.style.display = 'none';
+      }
+    }
+
     // Setup screen Copy Logs button
     const setupCopyLogsBtn = document.getElementById('setupCopyLogsBtn');
     if (setupCopyLogsBtn) {
