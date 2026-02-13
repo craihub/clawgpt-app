@@ -1628,7 +1628,7 @@ window.CLAWGPT_CONFIG = {
 
   // Join relay as client (phone side - scanned QR code)
   async joinRelayAsClient({ server, channel, pubkey }) {
-    console.log('Joining relay as client:', { server, channel });
+    console.log('Joining relay as client:', { server, channel, pubkeyLen: pubkey?.length });
 
     this.setStatus('Connecting to relay...');
 
@@ -1875,7 +1875,8 @@ window.CLAWGPT_CONFIG = {
   // Send message to gateway via relay (phone side)
   sendViaRelay(gatewayMsg) {
     if (!this.relayEncrypted || !this.relayWs) {
-      console.error('Relay not connected');
+      console.error('Relay not connected', { encrypted: this.relayEncrypted, wsExists: !!this.relayWs, wsState: this.relayWs?.readyState, method: gatewayMsg?.method });
+      window._clawgptErrors.push('sendViaRelay failed: encrypted=' + this.relayEncrypted + ' ws=' + !!this.relayWs + ' state=' + this.relayWs?.readyState + ' method=' + gatewayMsg?.method);
       return;
     }
 
