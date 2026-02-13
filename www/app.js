@@ -31,6 +31,11 @@ class ClawGPT {
     this.pinnedExpanded = false;
     this.storage = new ChatStorage();
     this.memoryStorage = new MemoryStorage();
+
+    // Multi-agent support
+    this.agents = window.CLAWGT_AGENTS || [{ id: 'main', name: 'Main', sessionKey: 'agent:main:clawgt', icon: '', description: 'General assistant' }];
+    this.activeAgentId = localStorage.getItem('clawgt-active-agent') || this.agents[0]?.id || 'main';
+    this.agentChats = {}; // Stores chats per agent: { agentId: { chatId: chat } }
     try {
       this.isMobile = typeof Capacitor !== 'undefined' && typeof Capacitor.isNativePlatform === 'function' && Capacitor.isNativePlatform();
     } catch (e) {
@@ -47,8 +52,24 @@ class ClawGPT {
   }
 
   async init() {
+    // Set session key from active agent
+    const activeAgent = this.agents.find(a => a.id === this.activeAgentId);
+    if (activeAgent) {
+      this.sessionKey = activeAgent.sessionKey;
+    }
+
     await this.loadChats();
     this.renderChatList();
+
+    // Set header to active agent name
+    if (activeAgent) {
+      const titleEl = document.querySelector('.title');
+      if (titleEl) titleEl.textContent = activeAgent.name;
+      const welcomeTitle = document.getElementById('welcomeTitle');
+      if (welcomeTitle) welcomeTitle.textContent = activeAgent.name;
+      const welcomeDesc = document.getElementById('welcomeDesc');
+      if (welcomeDesc) welcomeDesc.textContent = activeAgent.description || '';
+    }
 
     // Sync existing chats to clawgpt-memory (background)
     this.syncMemoryStorage();
@@ -71,7 +92,6 @@ class ClawGPT {
       // Check if we were the HOST (have pairing-id that matches saved room)
       if (savedPairingId && savedRelay.roomId === savedPairingId) {
         console.log('Reconnecting to relay as host...');
-        this.isReconnecting = true;
         try {
           // Initialize crypto for host
           this.relayCrypto = new RelayCrypto();
@@ -80,19 +100,15 @@ class ClawGPT {
           // Reconnect to the same room as host
           await this.connectToRelayRoom(savedRelay.server, savedRelay.roomId);
           console.log('Auto-reconnected to relay room as host');
-          this.isReconnecting = false;
           return; // Don't show setup wizard
         } catch (e) {
           console.error('Failed to reconnect as host:', e);
-          this.isReconnecting = false;
           // Fall through to setup wizard
         }
       } else {
         // We were the CLIENT - use client reconnect logic
         console.log('Found saved relay connection, reconnecting as client...');
-        this.isReconnecting = true;
         const reconnected = await this.reconnectToRelay();
-        this.isReconnecting = false;
         if (reconnected) {
           return; // Don't show setup wizard - we're reconnecting via relay
         }
@@ -111,76 +127,6 @@ class ClawGPT {
       }
     } else {
       this.autoConnect();
-    }
-
-    // Set up auto-reconnect on app resume (mobile)
-    this.setupAppStateListener();
-  }
-
-  // Auto-reconnect when app resumes from background or screen turns on
-  setupAppStateListener() {
-    if (typeof Capacitor === 'undefined' || !Capacitor.Plugins?.App) {
-      return; // Not on mobile
-    }
-
-    const { App } = Capacitor.Plugins;
-
-    // Listen for app state changes (foreground/background, screen on/off)
-    App.addListener('appStateChange', ({ isActive }) => {
-      if (isActive) {
-        console.log('App became active, checking relay connection...');
-        this.checkAndReconnectRelay();
-      }
-    });
-
-    // Also listen for resume event
-    App.addListener('resume', () => {
-      console.log('App resumed, checking relay connection...');
-      this.checkAndReconnectRelay();
-    });
-  }
-
-  // Check if relay is disconnected and reconnect if needed
-  async checkAndReconnectRelay() {
-    // Prevent concurrent reconnection attempts
-    if (this.isReconnecting) {
-      console.log('Reconnection already in progress, skipping');
-      return;
-    }
-
-    // If already connected, do nothing
-    if (this.relayWs && this.relayWs.readyState === WebSocket.OPEN && this.relayEncrypted) {
-      console.log('Relay already connected');
-      return;
-    }
-
-    // Check if we have saved relay info
-    const savedRelay = this.getSavedRelayConnection();
-    if (!savedRelay) {
-      console.log('No saved relay connection');
-      return;
-    }
-
-    // Try to reconnect silently
-    this.isReconnecting = true;
-    console.log('Auto-reconnecting to relay...');
-    this.setStatus('Reconnecting...');
-
-    try {
-      const success = await this.reconnectToRelay();
-      if (success) {
-        console.log('Auto-reconnect successful');
-        this._relayReconnectAttempts = 0; // Reset backoff on success
-        // Don't show verification words on reconnect - just "Connected"
-        this.setStatus('Connected', true);
-      } else {
-        this.setStatus('Tap to reconnect');
-      }
-    } catch (e) {
-      console.error('Auto-reconnect failed:', e);
-      this.setStatus('Tap to reconnect');
-    } finally {
-      this.isReconnecting = false;
     }
   }
 
@@ -392,7 +338,7 @@ class ClawGPT {
         console.log(`File memory: synced ${count} messages to disk`);
       }
     } else if (this.fileMemoryStorage._pendingHandle) {
-      // Had a saved handle but no permission — reconnect on first user interaction
+      // Had a saved handle but no permission - reconnect on first user interaction
       const reconnectOnce = async () => {
         document.removeEventListener('click', reconnectOnce);
         const ok = await this.fileMemoryStorage.reconnect();
@@ -405,14 +351,8 @@ class ClawGPT {
       };
       document.addEventListener('click', reconnectOnce, { once: true });
     } else if (!this.isMobile) {
-      // Desktop only: prompt for folder selection on first run
-      // (Mobile auto-creates the folder, no prompt needed)
-      const hasAskedForMemory = localStorage.getItem('clawgpt-memory-asked');
-      if (!hasAskedForMemory && 'showDirectoryPicker' in window) {
-        this.promptFileMemorySetup();
-      } else {
-        console.log('File memory storage not enabled (select folder in settings)');
-      }
+      // Feature available in Settings, no auto-prompt (less confusing for new users)
+      console.log('File memory storage available in Settings');
     }
   }
 
@@ -421,21 +361,98 @@ class ClawGPT {
     // Mark that we've asked (so we don't ask again)
     localStorage.setItem('clawgpt-memory-asked', 'true');
 
-    // Show a toast explaining the feature
-    this.showToast('Tip: Set up cross-device memory in Settings', 5000);
+    // Show custom modal (preserves user gesture for file picker)
+    const modal = document.getElementById('memorySetupModal');
+    const confirmBtn = document.getElementById('memorySetupConfirm');
+    const skipBtn = document.getElementById('memorySetupSkip');
 
-    // Auto-open settings after a short delay on first run
+    if (!modal || !confirmBtn || !skipBtn) {
+      console.log('Memory setup modal not found');
+      return;
+    }
+
+    // Show modal after short delay
     setTimeout(() => {
-      const shouldSetup = confirm(
-        'ClawGPT can sync your conversations across devices.\n\n' +
-        'To enable this, select a folder called "clawgpt-memory" in your ClawGPT directory.\n\n' +
-        'Set up now?'
-      );
+      modal.classList.add('open');
 
-      if (shouldSetup) {
+      // Handle confirm - directly triggers file picker (preserves user gesture)
+      const handleConfirm = () => {
+        modal.classList.remove('open');
         this.enableFileMemoryStorage();
-      }
-    }, 2000);
+        cleanup();
+      };
+
+      // Handle skip
+      const handleSkip = () => {
+        modal.classList.remove('open');
+        cleanup();
+      };
+
+      // Handle click outside
+      const handleOutside = (e) => {
+        if (e.target === modal) {
+          modal.classList.remove('open');
+          cleanup();
+        }
+      };
+
+      const cleanup = () => {
+        confirmBtn.removeEventListener('click', handleConfirm);
+        skipBtn.removeEventListener('click', handleSkip);
+        modal.removeEventListener('click', handleOutside);
+      };
+
+      confirmBtn.addEventListener('click', handleConfirm);
+      skipBtn.addEventListener('click', handleSkip);
+      modal.addEventListener('click', handleOutside);
+    }, 1000);
+  }
+
+  // Prompt Firefox/Brave users to import chats (no folder sync available)
+  promptImportSetup() {
+    localStorage.setItem('clawgpt-memory-asked', 'true');
+
+    const modal = document.getElementById('importSetupModal');
+    const confirmBtn = document.getElementById('importSetupConfirm');
+    const skipBtn = document.getElementById('importSetupSkip');
+
+    if (!modal || !confirmBtn || !skipBtn) {
+      // Fallback to toast if modal not found
+      this.showToast('Tip: Import previous chats in Settings', 5000);
+      return;
+    }
+
+    setTimeout(() => {
+      modal.classList.add('open');
+
+      const handleConfirm = () => {
+        modal.classList.remove('open');
+        this.openSettings();
+        cleanup();
+      };
+
+      const handleSkip = () => {
+        modal.classList.remove('open');
+        cleanup();
+      };
+
+      const handleOutside = (e) => {
+        if (e.target === modal) {
+          modal.classList.remove('open');
+          cleanup();
+        }
+      };
+
+      const cleanup = () => {
+        confirmBtn.removeEventListener('click', handleConfirm);
+        skipBtn.removeEventListener('click', handleSkip);
+        modal.removeEventListener('click', handleOutside);
+      };
+
+      confirmBtn.addEventListener('click', handleConfirm);
+      skipBtn.addEventListener('click', handleSkip);
+      modal.addEventListener('click', handleOutside);
+    }, 1000);
   }
 
   // Enable file memory storage (user selects directory)
@@ -446,7 +463,26 @@ class ClawGPT {
       this.showToast(`Memory folder: ${this.fileMemoryStorage.getDirectoryName()}`);
       this.updateFileMemoryUI();
 
-      // Sync all chats to the new folder
+      // Load chats FROM the memory folder (for new instances)
+      try {
+        const memoryChats = await this.fileMemoryStorage.loadFromMemory();
+        let loaded = 0;
+        for (const [chatId, chat] of Object.entries(memoryChats)) {
+          if (!this.chats[chatId]) {
+            this.chats[chatId] = chat;
+            loaded++;
+          }
+        }
+        if (loaded > 0) {
+          this.showToast(`Loaded ${loaded} chats from memory`);
+          this.storage.saveAll(this.chats);
+          this.renderChatList();
+        }
+      } catch (e) {
+        console.warn('Failed to load from memory folder:', e);
+      }
+
+      // Sync all current chats TO the folder
       const count = await this.fileMemoryStorage.syncAllChats(this.chats);
       this.showToast(`Synced ${count} messages to disk`);
     }
@@ -459,6 +495,7 @@ class ClawGPT {
     const statusEl = document.getElementById('fileMemoryStatus');
     const enableBtn = document.getElementById('enableFileMemoryBtn');
     const syncBtn = document.getElementById('syncFileMemoryBtn');
+    const hintEl = document.getElementById('fileMemoryHint');
 
     if (this.fileMemoryStorage.isEnabled()) {
       if (statusEl) {
@@ -466,12 +503,14 @@ class ClawGPT {
       }
       if (enableBtn) enableBtn.textContent = 'Change Folder';
       if (syncBtn) syncBtn.style.display = 'inline-block';
+      if (hintEl) hintEl.style.display = 'none';
     } else {
       if (statusEl) {
         statusEl.innerHTML = '<span style="color: var(--text-muted);">Not configured</span>';
       }
       if (enableBtn) enableBtn.textContent = 'Select Folder';
       if (syncBtn) syncBtn.style.display = 'none';
+      if (hintEl) hintEl.style.display = 'block';
     }
   }
 
@@ -838,13 +877,46 @@ window.CLAWGPT_CONFIG = {
   }
 
   estimateTokens(text) {
-    // Rough estimate: ~4 chars per token for English
-    return Math.ceil(text.length / 4);
+    if (!text) return 0;
+    // Better heuristic: count words + punctuation/special tokens separately
+    // Average English word ≈ 1.3 tokens, code tends higher
+    const words = text.split(/\s+/).filter(w => w.length > 0).length;
+    // Code/special characters add extra tokens (brackets, operators, etc.)
+    const specials = (text.match(/[{}()\[\]<>:;,=+\-*\/\\|@#$%^&!~`"']/g) || []).length;
+    // Newlines often become tokens
+    const newlines = (text.match(/\n/g) || []).length;
+    return Math.ceil(words * 1.3 + specials * 0.5 + newlines * 0.5);
   }
 
   // Chat storage (IndexedDB with localStorage fallback)
   async loadChats() {
+    // Load from localStorage first
     this.chats = await this.storage.loadAll();
+
+    // Also load from file memory folder and merge
+    if (this.fileMemoryStorage.isEnabled()) {
+      try {
+        const memoryChats = await this.fileMemoryStorage.loadFromMemory();
+
+        // Merge: memory folder chats are added if not already in localStorage
+        // localStorage takes priority for existing chats (more recent)
+        let merged = 0;
+        for (const [chatId, chat] of Object.entries(memoryChats)) {
+          if (!this.chats[chatId]) {
+            this.chats[chatId] = chat;
+            merged++;
+          }
+        }
+
+        if (merged > 0) {
+          console.log(`Merged ${merged} chats from memory folder`);
+          // Save merged chats to localStorage for faster loading next time
+          this.storage.saveAll(this.chats);
+        }
+      } catch (e) {
+        console.warn('Failed to load from memory folder:', e);
+      }
+    }
   }
 
   saveChats(broadcastChatId = null) {
@@ -1351,10 +1423,11 @@ window.CLAWGPT_CONFIG = {
 
           // Handle encrypted messages
           if (msg.type === 'encrypted' && this.relayEncrypted) {
+            console.log('[Relay] Received encrypted message from phone');
             const decrypted = this.relayCrypto.openEnvelope(msg);
             if (decrypted) {
-              // Phone is client - use client-side handler
-              this.handleRelayClientMessage(decrypted);
+              console.log('[Relay] Decrypted message type:', decrypted.type);
+              this.handleRelayMessage(decrypted);
             } else {
               console.error('Failed to decrypt relay message');
             }
@@ -1367,12 +1440,12 @@ window.CLAWGPT_CONFIG = {
           }
 
         } catch (e) {
-          console.error('Relay message parse error:', e.message || e.toString(), e.stack);
+          console.error('Relay message parse error:', e);
         }
       };
 
       this.relayWs.onerror = (error) => {
-        console.error('Relay WebSocket error:', error.message || error.toString());
+        console.error('Relay WebSocket error:', error);
         reject(new Error('Connection failed'));
       };
 
@@ -1381,6 +1454,27 @@ window.CLAWGPT_CONFIG = {
         this.relayWs = null;
         this.relayEncrypted = false;
         // Don't destroy relayCrypto - may be reused for reconnection
+
+        // Auto-reconnect as host with exponential backoff
+        const saved = this.getSavedRelayConnection();
+        if (saved && this.relayRole === 'host') {
+          const delay = Math.min(3000 * Math.pow(2, (this._relayReconnectAttempts || 0)), 60000);
+          this._relayReconnectAttempts = (this._relayReconnectAttempts || 0) + 1;
+          console.log(`Relay auto-reconnect in ${delay/1000}s (attempt ${this._relayReconnectAttempts})`);
+          this.setStatus('Reconnecting...');
+          this._relayReconnectTimer = setTimeout(async () => {
+            try {
+              this.relayCrypto = new RelayCrypto();
+              this.relayCrypto.generateKeyPair();
+              await this.connectToRelayRoom(saved.server, saved.roomId);
+              console.log('Relay auto-reconnected successfully');
+              this._relayReconnectAttempts = 0;
+              this.setStatus('Waiting for phone...');
+            } catch (e) {
+              console.error('Relay auto-reconnect failed:', e);
+            }
+          }, delay);
+        }
       };
 
       // Timeout
@@ -1424,23 +1518,6 @@ window.CLAWGPT_CONFIG = {
     console.log('Reconnecting to saved relay room:', saved);
     this.setStatus('Reconnecting...');
 
-    // Close any existing connection first to avoid overlapping connections
-    if (this.relayWs) {
-      console.log('Closing existing WebSocket before reconnect');
-      try {
-        this.relayWs.onclose = null;  // Prevent onclose from triggering more reconnects
-        this.relayWs.onerror = null;
-        this.relayWs.onmessage = null;
-        this.relayWs.close();
-      } catch (e) {
-        // Ignore close errors
-      }
-      this.relayWs = null;
-    }
-
-    // Reset encryption state
-    this.relayEncrypted = false;
-
     // Initialize crypto - we'll wait for desktop to send key exchange
     if (typeof RelayCrypto === 'undefined') {
       console.error('RelayCrypto not available');
@@ -1461,17 +1538,7 @@ window.CLAWGPT_CONFIG = {
       return false;
     }
 
-    // Connection timeout - close if not connected within 30 seconds
-    const reconnectTimeout = setTimeout(() => {
-      if (this.relayWs && this.relayWs.readyState !== WebSocket.OPEN) {
-        console.warn('Relay reconnection timed out after 30s');
-        this.relayWs.close();
-        this.setStatus('Connection timed out');
-      }
-    }, 30000);
-
     this.relayWs.onopen = () => {
-      clearTimeout(reconnectTimeout);
       console.log('Reconnected to relay room, waiting for desktop...');
       this.setStatus('Waiting for desktop...');
 
@@ -1509,22 +1576,18 @@ window.CLAWGPT_CONFIG = {
           console.log('Received keyexchange from desktop');
           if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
             // Send our public key back
-            if (this.relayWs?.readyState === WebSocket.OPEN) {
-              this.relayWs.send(JSON.stringify({
-                type: 'keyexchange',
-                publicKey: this.relayCrypto.getPublicKey()
-              }));
-            } else {
-              console.warn('WebSocket not open, cannot respond to keyexchange');
-            }
+            this.relayWs.send(JSON.stringify({
+              type: 'keyexchange',
+              publicKey: this.relayCrypto.getPublicKey()
+            }));
 
             this.relayEncrypted = true;
             const verifyCode = this.relayCrypto.getVerificationCode();
             console.log('E2E encryption re-established! Verification:', verifyCode);
 
-            // Don't show toast with verification words - just update status
+            this.setStatus('Secure relay connected', true);
+            this.showToast(`Reconnected! Verify: ${verifyCode}`);
             this.showRelayClientStatus(verifyCode);
-            this.finalizeRelayConnection();
 
             // Sync chats
             this.sendChatSyncMeta();
@@ -1541,12 +1604,12 @@ window.CLAWGPT_CONFIG = {
           return;
         }
       } catch (e) {
-        console.error('Relay message error:', e.message || e.toString(), e.stack);
+        console.error('Relay message error:', e);
       }
     };
 
     this.relayWs.onerror = (error) => {
-        console.error('Relay reconnect error:', error.message || error.toString());
+      console.error('Relay reconnect error:', error);
       this.setStatus('Connection error');
     };
 
@@ -1558,26 +1621,6 @@ window.CLAWGPT_CONFIG = {
       } else {
         this.setStatus('Disconnected');
       }
-
-      // Auto-reconnect with exponential backoff
-      const saved = this.getSavedRelayConnection();
-      if (saved && event.code !== 1000) { // Don't reconnect on normal close
-        const delay = Math.min(3000 * Math.pow(2, (this._relayReconnectAttempts || 0)), 60000);
-        this._relayReconnectAttempts = (this._relayReconnectAttempts || 0) + 1;
-        console.log(`Relay auto-reconnect in ${delay/1000}s (attempt ${this._relayReconnectAttempts})`);
-        this.setStatus(`Reconnecting in ${Math.round(delay/1000)}s...`);
-        this._relayReconnectTimer = setTimeout(async () => {
-          try {
-            const success = await this.reconnectToRelay();
-            if (success) {
-              console.log('Relay auto-reconnect successful');
-              this._relayReconnectAttempts = 0;
-            }
-          } catch (e) {
-            console.error('Relay auto-reconnect failed:', e);
-          }
-        }, delay);
-      }
     };
 
     return true;
@@ -1588,21 +1631,6 @@ window.CLAWGPT_CONFIG = {
     console.log('Joining relay as client:', { server, channel });
 
     this.setStatus('Connecting to relay...');
-
-    // Close any existing connection first
-    if (this.relayWs) {
-      console.log('Closing existing WebSocket before joining');
-      try {
-        this.relayWs.onclose = null;
-        this.relayWs.onerror = null;
-        this.relayWs.onmessage = null;
-        this.relayWs.close();
-      } catch (e) {
-        // Ignore close errors
-      }
-      this.relayWs = null;
-    }
-    this.relayEncrypted = false;
 
     // Initialize crypto
     if (typeof RelayCrypto === 'undefined') {
@@ -1633,18 +1661,7 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
-    // Connection timeout
-    const joinTimeout = setTimeout(() => {
-      if (this.relayWs && this.relayWs.readyState !== WebSocket.OPEN) {
-        console.warn('Relay join timed out after 30s');
-        this.relayWs.close();
-        this.showToast('Connection timed out', true);
-        this.setStatus('Connection timed out');
-      }
-    }, 30000);
-
     this.relayWs.onopen = () => {
-      clearTimeout(joinTimeout);
       console.log('Connected to relay WebSocket, waiting for room.joined...');
       // Don't send keyexchange here - wait for room.joined event
     };
@@ -1658,23 +1675,11 @@ window.CLAWGPT_CONFIG = {
           if (msg.event === 'channel.joined' || msg.event === 'room.joined') {
             console.log('Joined relay room, sending keyexchange...');
             // NOW send keyexchange - room is ready
-            if (this.relayWs?.readyState === WebSocket.OPEN) {
-              this.relayWs.send(JSON.stringify({
-                type: 'keyexchange',
-                publicKey: this.relayCrypto.getPublicKey()
-              }));
-            } else {
-              console.warn('WebSocket not open, cannot send keyexchange');
-            }
+            this.relayWs.send(JSON.stringify({
+              type: 'keyexchange',
+              publicKey: this.relayCrypto.getPublicKey()
+            }));
             this.setStatus('Securing connection...');
-
-            // Timeout fallback: if no key exchange response in 3s, check if we're already encrypted
-            // (handles race where desktop's keyexchange arrived before room.joined)
-            setTimeout(() => {
-              if (this.relayEncrypted) {
-                this.finalizeRelayConnection();
-              }
-            }, 3000);
           } else if (msg.event === 'host.disconnected') {
             this.showToast('Desktop disconnected', true);
             this.setStatus('Host disconnected');
@@ -1701,9 +1706,16 @@ window.CLAWGPT_CONFIG = {
           const verifyCode = this.relayCrypto.getVerificationCode();
           console.log('E2E encryption established! Verification:', verifyCode);
 
-          // Don't show toast with verification words - just update status
+          this.setStatus('Connected', true);
+          this.showToast(`Secure! Verify: ${verifyCode}`);
           this.showRelayClientStatus(verifyCode);
-          this.finalizeRelayConnection();
+
+          // Close the setup modal
+          const setupModal = document.getElementById('setupModal');
+          if (setupModal) {
+            setupModal.classList.remove('open');
+            setupModal.style.display = 'none';
+          }
 
           // Start sync after encryption confirmed
           this.sendChatSyncMeta();
@@ -1722,21 +1734,24 @@ window.CLAWGPT_CONFIG = {
             }
             if (this.relayCrypto.setPeerPublicKey(msg.publicKey)) {
               // Respond with our key
-              if (this.relayWs?.readyState === WebSocket.OPEN) {
-                this.relayWs.send(JSON.stringify({
-                  type: 'keyexchange',
-                  publicKey: this.relayCrypto.getPublicKey()
-                }));
-              } else {
-                console.warn('WebSocket not open, cannot respond to keyexchange');
-              }
+              this.relayWs.send(JSON.stringify({
+                type: 'keyexchange',
+                publicKey: this.relayCrypto.getPublicKey()
+              }));
               this.relayEncrypted = true;
               const verifyCode = this.relayCrypto.getVerificationCode();
               console.log('E2E encryption established! Verification:', verifyCode);
 
-              // Don't show toast with verification words - just update status
+              this.setStatus('Connected', true);
+              this.showToast(`Secure! Verify: ${verifyCode}`);
               this.showRelayClientStatus(verifyCode);
-              this.finalizeRelayConnection();
+
+              // Close setup modal
+              const setupModal = document.getElementById('setupModal');
+              if (setupModal) {
+                setupModal.classList.remove('open');
+                setupModal.style.display = 'none';
+              }
 
               this.sendChatSyncMeta();
             }
@@ -1755,12 +1770,12 @@ window.CLAWGPT_CONFIG = {
           return;
         }
       } catch (e) {
-        console.error('Relay message parse error:', e.message || e.toString(), e.stack);
+        console.error('Relay message parse error:', e);
       }
     };
 
     this.relayWs.onerror = (error) => {
-      console.error('Relay error:', error.message || error.toString());
+      console.error('Relay error:', error);
       const errMsg = 'Relay connection error';
       window._clawgptErrors.push(errMsg);
       showErrorBanner(errMsg, false);
@@ -1787,65 +1802,26 @@ window.CLAWGPT_CONFIG = {
       }
 
       // Don't destroy relayCrypto - may be reused for reconnection
-
-      // Auto-reconnect with exponential backoff on abnormal close
-      const saved = this.getSavedRelayConnection();
-      if (saved && event.code !== 1000) {
-        const delay = Math.min(3000 * Math.pow(2, (this._relayReconnectAttempts || 0)), 60000);
-        this._relayReconnectAttempts = (this._relayReconnectAttempts || 0) + 1;
-        console.log(`Relay auto-reconnect in ${delay/1000}s (attempt ${this._relayReconnectAttempts})`);
-        this.setStatus(`Reconnecting in ${Math.round(delay/1000)}s...`);
-        this._relayReconnectTimer = setTimeout(async () => {
-          try {
-            const success = await this.reconnectToRelay();
-            if (success) {
-              console.log('Relay auto-reconnect successful');
-              this._relayReconnectAttempts = 0;
-            }
-          } catch (e) {
-            console.error('Relay auto-reconnect failed:', e);
-          }
-        }, delay);
-      }
     };
   }
 
-  // Handle messages received as relay client (phone side - THIN CLIENT)
+  // Handle messages received as relay client (phone side)
   handleRelayClientMessage(msg) {
-    // SIMPLIFIED PROTOCOL
-
-    // Receive full state from desktop
-    if (msg.type === 'full-state') {
-      console.log('[Relay] Received full state from desktop');
-      this.handleFullState(msg.state);
+    // Handle sync messages (same as host)
+    if (msg.type === 'sync-meta') {
+      this.handleSyncMeta(msg);
       return;
     }
-
-    // Receive chat update (new message)
+    if (msg.type === 'sync-request') {
+      this.handleSyncRequest(msg);
+      return;
+    }
+    if (msg.type === 'sync-data') {
+      this.handleSyncData(msg);
+      return;
+    }
     if (msg.type === 'chat-update') {
-      console.log('[Relay] Received chat update');
       this.handleChatUpdate(msg);
-      return;
-    }
-
-    // Handle message status updates
-    if (msg.type === 'message-status') {
-      console.log('[Relay] Received message status:', msg.status);
-      this.handleMessageStatus(msg);
-      return;
-    }
-
-    // Handle stop generation acknowledgment
-    if (msg.type === 'generation-stopped') {
-      console.log('[Relay] Generation stopped by desktop');
-      this.handleGenerationStopped();
-      return;
-    }
-
-    // Legacy sync messages - request full state instead
-    if (msg.type === 'sync-meta' || msg.type === 'sync-data') {
-      console.log('[Relay] Legacy sync, requesting full state');
-      this.requestFullState();
       return;
     }
 
@@ -1855,152 +1831,18 @@ window.CLAWGPT_CONFIG = {
       this.gatewayUrl = msg.gatewayUrl;
       this.authToken = msg.token;
       this.saveSettings();
+
+      // Now connect to gateway through the desktop (relay forwards our messages)
+      this.connectViaRelay();
       return;
     }
 
     // Handle gateway responses forwarded from desktop
     if (msg.type === 'gateway-response') {
+      // Reuse the normal gateway message handler
       this.handleMessage(msg.data);
       return;
     }
-  }
-
-  // THIN CLIENT: Request full state from desktop
-  requestFullState() {
-    if (!this.relayEncrypted) return;
-    this.sendRelayMessage({ type: 'request-state' });
-    console.log('[Relay] Requested full state from desktop');
-  }
-
-  // Handle message status updates from desktop
-  handleMessageStatus(statusData) {
-    const { chatId, status, message } = statusData;
-    
-    // Show status feedback to user
-    switch (status) {
-      case 'queued':
-        this.setStatus('Queued...', false);
-        if (message) this.showToast(message, false);
-        break;
-      case 'reconnecting':
-        this.setStatus('Reconnecting...', false);
-        if (message) this.showToast(message, false);
-        break;
-      case 'connected':
-        this.setStatus('Connected', true);
-        if (message) this.showToast(message, false);
-        break;
-      case 'failed':
-        this.setStatus('Connection Failed', false);
-        this.showToast(message || 'Connection failed', true);
-        break;
-      case 'error':
-        this.setStatus('Error', false);
-        this.showToast(message || 'An error occurred', true);
-        break;
-      default:
-        // Unknown status, just log it
-        console.log('Unknown message status:', status, message);
-    }
-  }
-
-  // Handle generation stopped acknowledgment from desktop
-  handleGenerationStopped() {
-    console.log('Desktop confirmed generation stopped - starting voice input');
-    
-    // Stop any current TTS
-    if (this.ttsUtterance) {
-      speechSynthesis.cancel();
-    }
-    
-    // Clear streaming state
-    this.streaming = false;
-    this.voiceChatState = 'LISTENING';
-    
-    // Start listening immediately
-    this.startVoiceChatListening();
-    this.updateVoiceChatUI('LISTENING', 'Tap mic to speak...');
-  }
-
-  // Interrupt current generation and start listening
-  interruptAndListen() {
-    console.log('Interrupting current generation to listen for new input');
-    
-    // Stop any current TTS immediately
-    if (this.ttsUtterance) {
-      speechSynthesis.cancel();
-    }
-    
-    // Send stop command to desktop via relay
-    if (this.relayEncrypted) {
-      this.sendRelayMessage({ type: 'stop-generation' });
-    }
-    
-    // Stop local streaming state
-    this.streaming = false;
-    this.voiceChatState = 'LISTENING';
-    
-    // Clear any pending voice chat checks
-    this.clearVoiceChatChecks();
-    
-    // Start listening for new input
-    this.startVoiceChatListening();
-    this.updateVoiceChatUI('LISTENING', 'Listening...');
-  }
-
-  // Interrupt voice chat AI speech and start listening (for big mic tap)
-  interruptVoiceChatAndListen() {
-    console.log('Interrupting voice chat AI speech to listen for new input');
-    
-    // Stop current TTS immediately
-    if (this.tts) {
-      this.tts.stop().catch(() => {});
-    }
-    
-    // Also stop web TTS if active
-    if (this.ttsUtterance) {
-      speechSynthesis.cancel();
-    }
-    
-    // Send stop command to desktop via relay (in case streaming is active)
-    if (this.relayEncrypted) {
-      this.sendRelayMessage({ type: 'stop-generation' });
-    }
-    
-    // Clear voice chat checks and timeouts
-    this.clearVoiceChatChecks();
-    this.voiceChatPendingResponse = false;
-    
-    // Clear stream buffer to prevent replaying old response
-    this.streamBuffer = '';
-    this.streaming = false;
-    
-    // Clear streaming TTS state
-    this.ttsQueue = [];
-    this.ttsSpeaking = false;
-    this.ttsSpokenText = '';
-    this.voiceChatStreamingDone = false;
-    
-    // Reset to listening state and start listening immediately
-    this.voiceChatState = 'LISTENING';
-    this.startVoiceChatListening();
-    this.updateVoiceChatUI('LISTENING', 'Listening...');
-  }
-
-  // THIN CLIENT: Handle full state from desktop
-  handleFullState(state) {
-    if (!state || !state.chats) return;
-
-    // Replace local chats with desktop's state
-    this.chats = state.chats;
-    this.currentChatId = state.currentChatId;
-
-    console.log(`[Relay] Loaded ${Object.keys(this.chats).length} chats from desktop`);
-
-    // Update UI
-    this.renderChatList();
-    this.renderMessages();
-    this.scrollToBottom(true);  // Force scroll when loading state
   }
 
   // Connect to gateway through relay (phone side)
@@ -2051,39 +1893,6 @@ window.CLAWGPT_CONFIG = {
       statusEl.textContent = 'Secure';
       statusEl.classList.add('connected');
       statusEl.title = `Connected via encrypted relay. Verification: ${verifyCode}`;
-    }
-    
-    // Update settings verification display
-    const verifyDisplay = document.getElementById('verifyCodeDisplay');
-    if (verifyDisplay) {
-      verifyDisplay.textContent = `Verification: ${verifyCode}`;
-    }
-  }
-
-  // Ensure relay connection is finalized (modal closed, sync started)
-  // Called after encryption established to handle any race conditions
-  finalizeRelayConnection() {
-    if (!this.relayEncrypted) return;
-
-    // Make sure status shows connected
-    this.setStatus('Connected', true);
-
-    // Make sure setup modal is closed
-    const setupModal = document.getElementById('setupModal');
-    if (setupModal && (setupModal.classList.contains('open') || setupModal.style.display !== 'none')) {
-      console.log('Finalizing: closing setup modal');
-      setupModal.classList.remove('open');
-      setupModal.style.display = 'none';
-    }
-
-    // Enable send button
-    this.onInputChange();
-
-    // Request state if we don't have chats yet
-    if (!this.relayStateReceived && Object.keys(this.chats).length === 0) {
-      console.log('Finalizing: requesting state from desktop');
-      this.relayStateReceived = true;
-      this.sendRelayMessage({ type: 'request-state' });
     }
   }
 
@@ -2166,10 +1975,9 @@ window.CLAWGPT_CONFIG = {
     console.log(`[Relay] Sent full state: ${Object.keys(state.chats).length} chats`);
   }
 
-  // Legacy sync - in thin client mode, request state from desktop
+  // Legacy sync - keep for backwards compatibility but redirect to full state
   sendChatSyncMeta() {
-    // Phone is thin client - request state, don't send
-    this.requestFullState();
+    this.sendFullState();
   }
 
   getDeviceId() {
@@ -2249,13 +2057,35 @@ window.CLAWGPT_CONFIG = {
     let merged = 0;
     for (const [id, chat] of Object.entries(incomingChats)) {
       const ourChat = this.chats[id];
-      const ourUpdatedAt = ourChat?.updatedAt || ourChat?.createdAt || 0;
-      const theirUpdatedAt = chat.updatedAt || chat.createdAt || 0;
 
-      // Only merge if theirs is newer or we don't have it
-      if (!ourChat || theirUpdatedAt > ourUpdatedAt) {
+      if (!ourChat) {
+        // We don't have it at all - take theirs
         this.chats[id] = chat;
         merged++;
+      } else {
+        // Merge messages by ID to avoid losing local messages
+        const ourMsgIds = new Set(ourChat.messages.map(m => m.id));
+        let added = 0;
+        for (const theirMsg of chat.messages) {
+          if (!ourMsgIds.has(theirMsg.id)) {
+            ourChat.messages.push(theirMsg);
+            added++;
+          }
+        }
+        // Sort messages by timestamp after merge
+        if (added > 0) {
+          ourChat.messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+        }
+        // Take newer metadata (title, updatedAt, etc.)
+        const ourUpdatedAt = ourChat.updatedAt || ourChat.createdAt || 0;
+        const theirUpdatedAt = chat.updatedAt || chat.createdAt || 0;
+        if (theirUpdatedAt > ourUpdatedAt) {
+          ourChat.title = chat.title;
+          ourChat.updatedAt = chat.updatedAt;
+          ourChat.pinned = chat.pinned;
+          if (chat.metadata) ourChat.metadata = chat.metadata;
+        }
+        if (added > 0) merged++;
       }
     }
 
@@ -2285,180 +2115,31 @@ window.CLAWGPT_CONFIG = {
   }
 
   handleChatUpdate(msg) {
-    console.log('handleChatUpdate:', JSON.stringify(msg).substring(0, 200));
-
-    // Handle streaming updates from desktop
-    if (msg.streaming && msg.chatId) {
-      this.streamBuffer = msg.content || '';
-      this.streaming = true;
-      this.currentChatId = msg.chatId;
-      this.updateStreamingUI();
-      this.renderMessages();
-
-      // STREAMING TTS: Queue sentences as they arrive
-      if (this.voiceChatActive && this.voiceChatPendingResponse) {
-        const msgTime = msg.timestamp || Date.now();
-        const voiceChatStartTime = this.voiceChatMessageTime || 0;
-        
-        if (msgTime >= voiceChatStartTime) {
-          // Find new complete sentences to speak
-          const fullText = msg.content || '';
-          const spokenLen = this.ttsSpokenText?.length || 0;
-          const newText = fullText.substring(spokenLen);
-          
-          // Look for sentence boundaries in new text
-          const sentenceEndRegex = /[.!?]\s+|[.!?]$/;
-          const match = newText.match(sentenceEndRegex);
-          
-          if (match) {
-            // Found a sentence end - queue everything up to and including it
-            const endIndex = match.index + match[0].length;
-            const sentenceToSpeak = newText.substring(0, endIndex).trim();
-            
-            if (sentenceToSpeak) {
-              console.log('Streaming TTS: queueing sentence:', sentenceToSpeak.substring(0, 50) + '...');
-              this.ttsQueue.push(sentenceToSpeak);
-              this.ttsSpokenText = fullText.substring(0, spokenLen + endIndex);
-              
-              // Start speaking if not already
-              if (!this.ttsSpeaking) {
-                this.speakNextInQueue();
-              }
-            }
-          }
-        }
-      }
-
-      // If voice chat is waiting and streaming just ended (content is complete)
-      if (this.voiceChatActive && this.voiceChatPendingResponse && msg.done) {
-        // Check timestamp to avoid replaying old responses after interrupt
-        const msgTime = msg.timestamp || Date.now();
-        const voiceChatStartTime = this.voiceChatMessageTime || 0;
-        
-        if (msgTime >= voiceChatStartTime) {
-          console.log('Streaming done, speaking any remaining text');
-          // Speak any remaining text that wasn't a complete sentence
-          const fullText = msg.content || '';
-          const spokenLen = this.ttsSpokenText?.length || 0;
-          const remaining = fullText.substring(spokenLen).trim();
-          
-          if (remaining) {
-            console.log('Streaming TTS: queueing final chunk:', remaining.substring(0, 50) + '...');
-            this.ttsQueue.push(remaining);
-            this.ttsSpokenText = fullText;
-          }
-          
-          // Mark that streaming is done - speakNextInQueue will handle resuming listening
-          this.voiceChatStreamingDone = true;
-          
-          if (!this.ttsSpeaking && this.ttsQueue.length > 0) {
-            this.speakNextInQueue();
-          } else if (!this.ttsSpeaking && this.ttsQueue.length === 0) {
-            // Nothing to speak, resume listening
-            this.voiceChatPendingResponse = false;
-            this.startVoiceChatListening();
-          }
-        } else {
-          console.log('Ignoring stale streaming response after interrupt');
-        }
-      }
-      return;
-    }
-
-    // NEW SIMPLIFIED FORMAT: single message update
-    if (msg.chatId && msg.message) {
+    // Handle incremental message updates (single message added)
+    if (msg.chatId && msg.message && !msg.chat) {
       const chatId = msg.chatId;
-      const newMsg = msg.message;
-
-      // Create chat if it doesn't exist
       if (!this.chats[chatId]) {
+        // Create chat if it doesn't exist yet
         this.chats[chatId] = {
           id: chatId,
-          title: newMsg.content?.substring(0, 30) || 'New Chat',
+          title: msg.chatTitle || msg.message.content?.substring(0, 30) || 'New Chat',
           messages: [],
           createdAt: Date.now(),
           updatedAt: Date.now()
         };
       }
-
-      // Add message if not duplicate
-      const chat = this.chats[chatId];
-      const isDuplicate = chat.messages.some(m => m.id === newMsg.id);
-      if (!isDuplicate) {
-        chat.messages.push(newMsg);
-        chat.updatedAt = Date.now();
-
-        // Update title if this is first user message
-        if (newMsg.role === 'user' && chat.messages.length === 1) {
-          chat.title = newMsg.content.substring(0, 30) + (newMsg.content.length > 30 ? '...' : '');
-        }
-      }
-
-      // Stop streaming indicator if assistant message received
-      if (newMsg.role === 'assistant') {
-        this.streaming = false;
-        this.updateStreamingUI();
-
-        // If voice chat mode is active, speak the response
-        console.log('Assistant message received, voiceChatActive:', this.voiceChatActive, 'pendingResponse:', this.voiceChatPendingResponse);
-        if (this.voiceChatActive && this.voiceChatPendingResponse) {
-          // If streaming TTS was active, queue any remaining unspoken text
-          if (this.ttsSpokenText || this.ttsSpeaking || (this.ttsQueue && this.ttsQueue.length > 0)) {
-            const fullText = newMsg.content || '';
-            const spokenLen = this.ttsSpokenText?.length || 0;
-            const remaining = fullText.substring(spokenLen).trim();
-            
-            if (remaining) {
-              console.log('Streaming TTS: queueing remaining text:', remaining.substring(0, 50) + '...');
-              this.ttsQueue.push(remaining);
-              this.ttsSpokenText = fullText;
-              
-              // Mark streaming done so speakNextInQueue resumes listening after
-              this.voiceChatStreamingDone = true;
-              
-              // Start speaking if not already
-              if (!this.ttsSpeaking) {
-                this.speakNextInQueue();
-              }
-            } else {
-              console.log('Streaming TTS: no remaining text to speak');
-              // Mark streaming done so speakNextInQueue resumes listening when TTS finishes
-              this.voiceChatStreamingDone = true;
-              
-              // If nothing in queue and not currently speaking, resume listening now
-              if (!this.ttsSpeaking && this.ttsQueue.length === 0) {
-                this.voiceChatPendingResponse = false;
-                this.voiceChatStreamingDone = false;
-                this.ttsSpokenText = '';
-                this.startVoiceChatListening();
-              }
-            }
-          } else {
-            // Check if this response is for our current pending message (not a stale one)
-            const msgTime = newMsg.timestamp || Date.now();
-            const voiceChatStartTime = this.voiceChatMessageTime || 0;
-          
-            if (msgTime >= voiceChatStartTime) {
-              console.log('Triggering voice chat response with content length:', newMsg.content?.length);
-              this.handleVoiceChatResponse(newMsg.content);
-            } else {
-              console.log('Ignoring stale voice chat response (msg time:', msgTime, 'vs start time:', voiceChatStartTime, ')');
-            }
-          }
-        }
-      }
-
-      // Always switch to this chat when receiving updates (ensures user messages show)
-      this.currentChatId = chatId;
-
+      this.chats[chatId].messages.push(msg.message);
+      this.chats[chatId].updatedAt = Date.now();
+      this.saveChats();
       this.renderChatList();
-      this.renderMessages(); // Always render since we switched to this chat
-
-      console.log(`[Relay] Message update for chat: ${chat.title}`);
+      if (this.currentChatId === chatId) {
+        this.renderMessages();
+      }
+      console.log(`[Sync] Incremental update for chat: ${this.chats[chatId].title}`);
       return;
     }
 
-    // LEGACY FORMAT: full chat object
+    // Handle full chat replacement (for renames, deletes, full-state sync, etc.)
     const chat = msg.chat;
     const theirDeviceId = msg.deviceId;
 
@@ -2469,10 +2150,33 @@ window.CLAWGPT_CONFIG = {
     const ourUpdatedAt = ourChat?.updatedAt || ourChat?.createdAt || 0;
     const theirUpdatedAt = chat.updatedAt || chat.createdAt || 0;
 
-    if (!ourChat || theirUpdatedAt > ourUpdatedAt) {
+    if (!ourChat) {
       this.chats[chat.id] = chat;
+    } else if (theirUpdatedAt > ourUpdatedAt) {
+      // Merge messages by ID instead of overwriting
+      const ourMsgIds = new Set(ourChat.messages.map(m => m.id));
+      for (const theirMsg of chat.messages) {
+        if (!ourMsgIds.has(theirMsg.id)) {
+          ourChat.messages.push(theirMsg);
+        }
+      }
+      ourChat.messages.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      ourChat.title = chat.title;
+      ourChat.updatedAt = chat.updatedAt;
+      ourChat.pinned = chat.pinned;
+      if (chat.metadata) ourChat.metadata = chat.metadata;
+    }
+
+    if (!ourChat || theirUpdatedAt > ourUpdatedAt) {
       this.saveChats();
       this.renderChatList();
+
+      // Write to file memory
+      if (this.fileMemoryStorage.isEnabled()) {
+        this.fileMemoryStorage.writeChat(chat).catch(err => {
+          console.warn('Failed to write chat update to file:', err);
+        });
+      }
 
       if (this.currentChatId === chat.id) {
         this.renderMessages();
@@ -2514,6 +2218,15 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
+    // Phone requests to stop current generation
+    if (msg.type === 'stop-generation') {
+      console.log('[Relay] Phone requested stop generation');
+      this.stopGeneration();
+      // Send confirmation back to phone
+      this.sendRelayMessage({ type: 'generation-stopped' });
+      return;
+    }
+
     // Legacy sync messages - respond with full state instead
     if (msg.type === 'sync-meta' || msg.type === 'sync-request') {
       console.log('[Relay] Legacy sync request, sending full state');
@@ -2546,45 +2259,130 @@ window.CLAWGPT_CONFIG = {
 
   // Handle message from phone - create chat if needed and forward to gateway
   handlePhoneMessage(msg) {
-    const { chatId, content } = msg;
+    const { chatId, content, attachments } = msg;
 
     // Create chat if it doesn't exist
     if (!this.chats[chatId]) {
       this.chats[chatId] = {
         id: chatId,
-        title: content.substring(0, 30) + (content.length > 30 ? '...' : ''),
+        title: (content || 'Image').substring(0, 30) + ((content || '').length > 30 ? '...' : ''),
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: []
       };
     }
 
-    // Add user message
-    const userMsg = {
-      id: 'msg-' + Date.now(),
-      role: 'user',
-      content: content,
-      timestamp: Date.now()
-    };
-    this.chats[chatId].messages.push(userMsg);
-    this.chats[chatId].updatedAt = Date.now();
-
-    // Broadcast update to phone
-    this.sendRelayMessage({
-      type: 'chat-update',
-      chatId: chatId,
-      message: userMsg
-    });
-
-    // Switch to this chat and send to gateway
+    // Switch to this chat
     this.currentChatId = chatId;
-    this.saveChats();
-    this.renderChatList();
-    this.renderMessages();
-    this.scrollToBottom(true);
 
-    // Send to gateway
-    this.sendMessage(content);
+    // Use robust sending with retry logic
+    this.sendPhoneMessageWithRetry(content, chatId, attachments);
+  }
+
+  async sendPhoneMessageWithRetry(content, chatId, attachments = null, retryCount = 0) {
+    const maxRetries = 2; // Conservative: only 2 retries to avoid long waits
+    const retryDelay = 1500; // 1.5 seconds between retries
+
+    try {
+      // If already streaming, queue this message (existing logic, just moved here)
+      if (this.streaming) {
+        console.log('Already streaming, queuing phone message');
+        if (!this.phoneMessageQueue) this.phoneMessageQueue = [];
+        this.phoneMessageQueue.push({ content, chatId, attachments, timestamp: Date.now() });
+
+        // Notify phone that message is queued
+        if (this.relayEncrypted) {
+          this.sendRelayMessage({
+            type: 'message-status',
+            chatId: chatId,
+            status: 'queued',
+            message: 'Waiting for current response to finish...'
+          });
+        }
+        return;
+      }
+
+      // Check gateway connection
+      if (!this.connected) {
+        console.log(`Gateway not connected, attempting reconnect (attempt ${retryCount + 1})...`);
+
+        // Notify phone we're reconnecting
+        if (this.relayEncrypted) {
+          this.sendRelayMessage({
+            type: 'message-status',
+            chatId: chatId,
+            status: 'reconnecting',
+            message: retryCount === 0 ? 'Reconnecting to gateway...' : `Retrying connection (${retryCount + 1}/${maxRetries + 1})...`
+          });
+        }
+
+        await this.connect();
+
+        // If still not connected after attempt
+        if (!this.connected) {
+          if (retryCount < maxRetries) {
+            console.log(`Reconnect failed, retrying in ${retryDelay}ms...`);
+
+            // Wait and retry
+            setTimeout(() => {
+              this.sendPhoneMessageWithRetry(content, chatId, attachments, retryCount + 1);
+            }, retryDelay);
+            return;
+          } else {
+            // All retries failed - notify phone
+            console.error('Failed to reconnect to gateway after all retries');
+
+            if (this.relayEncrypted) {
+              this.sendRelayMessage({
+                type: 'message-status',
+                chatId: chatId,
+                status: 'failed',
+                message: 'Connection failed. Please try again or check gateway status.'
+              });
+            }
+            return;
+          }
+        }
+      }
+
+      // Gateway is connected - send normally
+      console.log('Sending phone message to gateway');
+
+      // Clear any status and send
+      if (this.relayEncrypted && retryCount > 0) {
+        this.sendRelayMessage({
+          type: 'message-status',
+          chatId: chatId,
+          status: 'connected',
+          message: 'Connected! Sending message...'
+        });
+      }
+
+      // Call original sendMessage (this adds user message and starts streaming)
+      // If we have attachments from phone, temporarily set them as pending
+      if (attachments && attachments.length > 0) {
+        // Convert relay attachments to pendingImages format
+        this.pendingImages = attachments.map(att => ({
+          base64: `data:${att.mimeType};base64,${att.content}`,
+          mimeType: att.mimeType,
+          name: 'image'
+        }));
+      }
+      this.sendMessage(content);
+
+    } catch (error) {
+      console.error('Phone message send failed:', error);
+
+      // Notify phone of error
+      if (this.relayEncrypted) {
+        this.sendRelayMessage({
+          type: 'message-status',
+          chatId: chatId,
+          status: 'error',
+          message: `Error: ${error.message}`
+        });
+      }
+    }
   }
 
   // Forward gateway response to phone via relay
@@ -2599,18 +2397,16 @@ window.CLAWGPT_CONFIG = {
 
   sendRelayMessage(msg) {
     if (!this.relayWs || this.relayWs.readyState !== WebSocket.OPEN) {
-      console.error('Relay not connected, state:', this.relayWs?.readyState);
+      console.error('Relay not connected');
       return;
     }
 
     if (this.relayEncrypted && this.relayCrypto) {
       // Send encrypted
       const envelope = this.relayCrypto.createEnvelope(msg);
-      console.log('[Relay] Sending encrypted message type:', msg.type);
       this.relayWs.send(JSON.stringify(envelope));
     } else {
       // Send unencrypted (only during key exchange)
-      console.log('[Relay] Sending unencrypted message type:', msg.type);
       this.relayWs.send(JSON.stringify(msg));
     }
   }
@@ -2712,18 +2508,21 @@ window.CLAWGPT_CONFIG = {
     this.applyTheme();
 
     // Event listeners
-    // Delegated click handler for images (avoid inline onclick XSS)
+    // Delegated click handlers (avoid inline onclick XSS)
     this.elements.messages.addEventListener('click', (e) => {
       const img = e.target.closest('.clickable-img');
       if (img && img.src && img.src.startsWith('data:')) {
         window.open(img.src, '_blank');
+        return;
+      }
+      const loadMoreBtn = e.target.closest('.load-more-btn');
+      if (loadMoreBtn) {
+        this.loadMoreMessages();
       }
     });
     this.elements.sendBtn.addEventListener('click', () => this.sendMessage());
     this.elements.messageInput.addEventListener('keydown', (e) => {
-      // On mobile: Enter = new line, send via button only
-      // On desktop: Enter = send, Shift+Enter = new line
-      if (e.key === 'Enter' && !e.shiftKey && !this.isMobile) {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this.sendMessage();
       }
@@ -2959,42 +2758,8 @@ window.CLAWGPT_CONFIG = {
       searchBtnCollapsed.addEventListener('click', () => this.openSearch());
     }
 
-    // Scan QR button in settings (mobile only)
-    const settingsScanQrBtn = document.getElementById('settingsScanQrBtn');
-    const scanQrContainer = document.getElementById('scanQrContainer');
-    const qrContainer = document.getElementById('qrContainer');
-    const qrDesktopHint = document.getElementById('qrDesktopHint');
-    const qrWarningHint = document.getElementById('qrWarningHint');
-    
-    if (this.isMobile) {
-      // Mobile: show scan button, hide QR generator
-      if (scanQrContainer) scanQrContainer.style.display = '';
-      if (qrContainer) qrContainer.style.display = 'none';
-      if (qrDesktopHint) qrDesktopHint.style.display = 'none';
-      if (qrWarningHint) qrWarningHint.style.display = 'none';
-      if (settingsScanQrBtn) {
-        settingsScanQrBtn.addEventListener('click', () => {
-          this.closeSettings();
-          this.scanQRCode();
-        });
-      }
-    }
-    
-    // Show mobile-specific help sections on mobile (keep all keyboard shortcuts visible)
-    const mobileGesturesGroup = document.getElementById('mobileGesturesGroup');
-    const voiceGroup = document.getElementById('voiceGroup');
-    
-    if (this.isMobile) {
-      // Show mobile-specific sections (keyboard shortcuts stay visible)
-      if (mobileGesturesGroup) mobileGesturesGroup.style.display = '';
-      if (voiceGroup) voiceGroup.style.display = '';
-    }
-
     // Apply saved collapse state
     this.applySidebarCollapseState();
-
-    // Swipe gestures for sidebar (mobile only)
-    this.initSwipeGestures();
 
     this.elements.darkMode.addEventListener('change', (e) => {
       this.darkMode = e.target.checked;
@@ -3204,9 +2969,7 @@ window.CLAWGPT_CONFIG = {
     const hasText = this.elements.messageInput.value.trim().length > 0;
     const hasImages = this.pendingImages && this.pendingImages.length > 0;
     const hasTextFiles = this.pendingTextFiles && this.pendingTextFiles.length > 0;
-    // Allow sending if connected to gateway OR relay (thin client mode)
-    const canSend = this.connected || (this.relayEncrypted && this.relayWs);
-    this.elements.sendBtn.disabled = (!hasText && !hasImages && !hasTextFiles) || !canSend;
+    this.elements.sendBtn.disabled = (!hasText && !hasImages && !hasTextFiles) || !this.connected;
 
     // Auto-resize textarea
     this.elements.messageInput.style.height = 'auto';
@@ -3227,55 +2990,6 @@ window.CLAWGPT_CONFIG = {
     if (overlay) {
       overlay.classList.remove('active');
     }
-  }
-
-  initSwipeGestures() {
-    if (!this.isMobile) return;
-
-    let startX = 0;
-    let startY = 0;
-    let tracking = false;
-
-    document.addEventListener('touchstart', (e) => {
-      // Ignore touches on inputs, voice button, and open modals
-      const target = e.target;
-      const tag = target.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (target.closest('.voice-btn') || target.closest('.voice-chat-overlay')) return;
-      if (target.closest('.modal.open')) return;
-
-      startX = e.touches[0].clientX;
-      startY = e.touches[0].clientY;
-      tracking = true;
-    }, { passive: true });
-
-    document.addEventListener('touchmove', () => {
-      // Intentionally empty - we only need start and end
-    }, { passive: true });
-
-    document.addEventListener('touchend', (e) => {
-      if (!tracking) return;
-      tracking = false;
-
-      const touch = e.changedTouches[0];
-      const dx = touch.clientX - startX;
-      const dy = touch.clientY - startY;
-      const absDx = Math.abs(dx);
-      const absDy = Math.abs(dy);
-
-      // Must exceed 60px threshold and horizontal must exceed vertical by 1.5x
-      if (absDx < 60 || absDx < absDy * 1.5) return;
-
-      const sidebarOpen = this.elements.sidebar.classList.contains('open');
-
-      if (dx > 0 && !sidebarOpen) {
-        // Swipe right -> open sidebar
-        this.toggleSidebar();
-      } else if (dx < 0 && sidebarOpen) {
-        // Swipe left -> close sidebar
-        this.closeSidebar();
-      }
-    }, { passive: true });
   }
 
   toggleSidebarCollapse() {
@@ -3696,6 +3410,25 @@ window.CLAWGPT_CONFIG = {
   }
 
   async performSemanticSearch(query, excludeChats) {
+    // Check semantic search cache (avoid re-querying AI for same query)
+    if (!this._semanticCache) this._semanticCache = new Map();
+    const cacheKey = query.toLowerCase().trim();
+    const cached = this._semanticCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < 5 * 60 * 1000) { // 5 min TTL
+      // Use cached results, filtering out already-found chats
+      const cachedResults = cached.results.filter(r => !excludeChats.has(r.chatId));
+      if (cachedResults.length > 0) {
+        const mergedResults = [...this.currentSearchResults, ...cachedResults];
+        mergedResults.sort((a, b) => {
+          const order = { exact: 0, topic: 1, summary: 1, entity: 1, semantic: 2 };
+          return (order[a.matchType] ?? 1) - (order[b.matchType] ?? 1) || (b.timestamp || 0) - (a.timestamp || 0);
+        });
+        this.currentSearchResults = mergedResults;
+        this.renderSearchResults(mergedResults, query);
+      }
+      return;
+    }
+
     // Build list of chats with summaries for semantic matching
     const chatSummaries = [];
     Object.entries(this.chats).forEach(([chatId, chat]) => {
@@ -3831,6 +3564,18 @@ Example: [0, 2, 5]`;
       });
 
       if (semanticResults.length > 0) {
+        // Cache results for this query (avoids re-querying AI)
+        if (!this._semanticCache) this._semanticCache = new Map();
+        this._semanticCache.set(query.toLowerCase().trim(), {
+          results: semanticResults,
+          timestamp: Date.now()
+        });
+        // Limit cache size
+        if (this._semanticCache.size > 50) {
+          const oldest = this._semanticCache.keys().next().value;
+          this._semanticCache.delete(oldest);
+        }
+
         // Merge with existing results
         const mergedResults = [...this.currentSearchResults, ...semanticResults];
 
@@ -4015,7 +3760,14 @@ Example: [0, 2, 5]`;
     // Get settings from UI
     this.gatewayUrl = this.elements.gatewayUrl.value.trim() || 'ws://127.0.0.1:18789';
     this.authToken = this.elements.authToken.value.trim();
-    this.sessionKey = this.elements.sessionKeyInput.value.trim() || 'main';
+    // Only update sessionKey from UI if user actually entered something
+    // Otherwise keep the value from config.js
+    const uiSessionKey = this.elements.sessionKeyInput?.value?.trim();
+    if (uiSessionKey) {
+      this.sessionKey = uiSessionKey;
+    } else if (!this.sessionKey) {
+      this.sessionKey = 'main';
+    }
     this.saveSettings();
 
     this.closeSettings();
@@ -4028,13 +3780,29 @@ Example: [0, 2, 5]`;
 
       this.ws = new WebSocket(this.gatewayUrl);
 
+      // Connection timeout - close if not connected within 30 seconds
+      const connectTimeout = setTimeout(() => {
+        if (this.ws && this.ws.readyState !== WebSocket.OPEN) {
+          console.warn('Gateway connection timed out after 30s');
+          this.ws.close();
+          if (!this.relayEncrypted) {
+            this.setStatus('Connection timed out');
+          }
+        }
+      }, 30000);
+
       this.ws.onopen = () => {
+        clearTimeout(connectTimeout);
         console.log('WebSocket connected');
         // Wait for challenge
       };
 
       this.ws.onmessage = (event) => {
-        this.handleMessage(JSON.parse(event.data));
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'event' && msg.event === 'chat') {
+          console.log('WS chat event:', msg.payload?.state, 'seq:', msg.payload?.seq);
+        }
+        this.handleMessage(msg);
       };
 
       this.ws.onerror = (error) => {
@@ -4066,10 +3834,8 @@ Example: [0, 2, 5]`;
   }
 
   handleMessage(msg) {
-    // Forward to relay if connected (for mobile clients) - but not if we ARE the mobile client
-    if (this.relayWs && this.relayWs.readyState === WebSocket.OPEN && this.relayEncrypted && !this.relayIsGatewayProxy) {
-      this.forwardToRelay(msg);
-    }
+    // Note: Don't forward raw gateway messages to phone - phone is thin client
+    // Phone will receive chat-update when assistant message is complete
 
     // Handle challenge
     if (msg.type === 'event' && msg.event === 'connect.challenge') {
@@ -4097,6 +3863,26 @@ Example: [0, 2, 5]`;
         this.loadHistory();
         this.updateSettingsButtons();
         this.fetchModels();
+
+        // Clear any stale streaming state when gateway reconnects
+        if (this.streaming) {
+          console.log('Clearing stale streaming state after reconnect');
+          this.streaming = false;
+          this.streamBuffer = '';
+          this.updateStreamingUI();
+        }
+
+        // Clean up old queued messages (older than 5 minutes)
+        if (this.phoneMessageQueue) {
+          const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+          const originalLength = this.phoneMessageQueue.length;
+          this.phoneMessageQueue = this.phoneMessageQueue.filter(msg =>
+            msg.timestamp > fiveMinutesAgo
+          );
+          if (this.phoneMessageQueue.length < originalLength) {
+            console.log(`Cleaned up ${originalLength - this.phoneMessageQueue.length} old queued messages`);
+          }
+        }
       }
       return;
     }
@@ -4153,7 +3939,16 @@ Example: [0, 2, 5]`;
     // Store pending request
     this.pendingRequests.set(connectMsg.id, {
       resolve: () => {},
-      reject: (err) => console.error('Connect failed:', err)
+      reject: (err) => {
+        console.error('Connect failed:', err);
+        const msg = err?.message || String(err);
+        if (msg.includes('origin not allowed')) {
+          const origin = window.location.origin;
+          const cmd = `openclaw config set gateway.controlUi.allowedOrigins '["${origin}"]'`;
+          this.setStatus(`Origin not allowed. Run: ${cmd}`, false);
+          this.showToast(`Origin blocked by gateway. Run in terminal:\n${cmd}\nThen refresh.`, true);
+        }
+      }
     });
   }
 
@@ -4194,38 +3989,6 @@ Example: [0, 2, 5]`;
     if (!this.elements.status) return;
     this.elements.status.textContent = text;
     this.elements.status.classList.toggle('connected', isConnected);
-
-    // Add tap-to-reconnect on mobile when disconnected
-    if (!isConnected && this.isMobile && !this._statusClickBound) {
-      this._statusClickBound = true;
-      this.elements.status.style.cursor = 'pointer';
-      this.elements.status.addEventListener('click', () => this.handleStatusTap());
-    }
-  }
-
-  // Handle tap on status to reconnect
-  async handleStatusTap() {
-    // Only try to reconnect if we're disconnected
-    if (this.relayEncrypted && this.relayWs?.readyState === WebSocket.OPEN) {
-      this.showToast('Already connected');
-      return;
-    }
-
-    // Try to reconnect
-    this.showToast('Reconnecting...');
-
-    // Check if we have saved relay info
-    const savedRelay = this.getSavedRelayConnection();
-    if (savedRelay) {
-      const success = await this.reconnectToRelay();
-      if (success) {
-        this.showToast('Reconnected!');
-      } else {
-        this.showToast('Reconnect failed - try scanning QR again', true);
-      }
-    } else {
-      this.showToast('No saved connection - scan QR code to connect', true);
-    }
   }
 
   // Chat functionality
@@ -4311,33 +4074,65 @@ Example: [0, 2, 5]`;
   }
 
   newChat() {
+    // Prompt for new workspace name
+    const name = prompt('What should this chat be called?');
+    if (!name || !name.trim()) return;
+
+    const trimmed = name.trim();
+    const slug = trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+    // Check for collision
+    if (this.agents.find(a => a.id === slug)) {
+      this.showToast('A workspace with that name already exists. Try a different name.', true);
+      return;
+    }
+
     // Trigger summary for the chat we're leaving
     if (this.currentChatId) {
       this.maybeGenerateSummary(this.currentChatId);
     }
-    
-    // Clear gateway session to prevent context buildup
-    // This doesn't affect local chat storage - just the AI's working memory
+
+    // Clear gateway session
     if (this.connected && this.lastGatewayChat) {
-      this.sendForgetCommand().catch(err => 
+      this.sendForgetCommand().catch(err =>
         console.warn('Failed to clear gateway session:', err)
       );
     }
     this.lastGatewayChat = null;
 
-    this.currentChatId = null;
-    this.elements.welcome.style.display = 'flex';
-    this.renderMessages();
-    this.renderChatList();
-    this.updateTokenDisplay();
+    // Add new agent to local list
+    const newAgent = {
+      id: slug,
+      name: trimmed,
+      sessionKey: `agent:${slug}:clawgt`,
+      icon: '',
+      description: trimmed
+    };
+    this.agents.push(newAgent);
+
+    // Send workspace creation request to main agent
+    // The main agent (Crai) will create the workspace, patch config, and restart gateway
+    if (this.connected) {
+      this.request('chat.send', {
+        sessionKey: 'agent:main:clawgt',
+        message: `[CLAWGT-CREATE-WORKSPACE] ${JSON.stringify({ id: slug, name: trimmed })}`,
+        deliver: false,
+        idempotencyKey: this.generateId()
+      }).catch(err => console.warn('Failed to send workspace creation request:', err));
+    }
+
+    // Switch to new agent
+    this.switchAgent(slug);
+    this.showToast(`Created workspace: ${trimmed}`);
+
     this.elements.messageInput.focus();
-    this.closeSidebar();
+    this.elements.sidebar.classList.remove('open');
   }
-  
+
   // Send /forget command to clear gateway session context
   async sendForgetCommand() {
     if (!this.connected) return;
-    
+
     try {
       await this.request('chat.send', {
         sessionKey: this.sessionKey,
@@ -4350,26 +4145,26 @@ Example: [0, 2, 5]`;
       console.warn('Failed to send /forget:', error);
     }
   }
-  
+
   // Build context from chat history for gateway
   buildChatContext(chat, maxMessages = 20) {
     if (!chat || !chat.messages || chat.messages.length === 0) {
       return null;
     }
-    
+
     // Get recent messages (limit to maxMessages)
     const messages = chat.messages.slice(-maxMessages);
-    
+
     // Format as conversation context
     const contextLines = messages.map(msg => {
       const role = msg.role === 'user' ? 'User' : 'Assistant';
       // Truncate very long messages
-      const content = msg.content.length > 2000 
+      const content = msg.content.length > 2000
         ? msg.content.slice(0, 2000) + '...[truncated]'
         : msg.content;
       return `${role}: ${content}`;
     });
-    
+
     return contextLines.join('\n\n');
   }
 
@@ -4380,11 +4175,11 @@ Example: [0, 2, 5]`;
     }
 
     this.currentChatId = chatId;
+    this._visibleMessageCount = null; // Reset virtualization on chat switch
     this.renderMessages();
-    this.scrollToBottom(true);  // Force scroll to bottom when switching chats
     this.renderChatList();
     this.updateTokenDisplay(); // Also updates model display
-    this.closeSidebar();
+    this.elements.sidebar.classList.remove('open');
   }
 
   deleteChat(chatId) {
@@ -4489,9 +4284,51 @@ Example: [0, 2, 5]`;
     });
   }
 
+  switchAgent(agentId) {
+    const agent = this.agents.find(a => a.id === agentId);
+    if (!agent) return;
+
+    // Save current state
+    if (this.currentChatId) {
+      this.maybeGenerateSummary(this.currentChatId);
+    }
+
+    // Switch
+    this.activeAgentId = agentId;
+    this.sessionKey = agent.sessionKey;
+    localStorage.setItem('clawgt-active-agent', agentId);
+
+    // Clear current chat
+    this.currentChatId = null;
+    this.lastGatewayChat = null;
+    this.elements.welcome.style.display = 'flex';
+    this.renderMessages();
+    this.renderChatList();
+    this.updateTokenDisplay();
+
+    // Update header and welcome
+    const titleEl = document.querySelector('.title');
+    if (titleEl) titleEl.textContent = agent.name;
+    const welcomeTitle = document.getElementById('welcomeTitle');
+    if (welcomeTitle) welcomeTitle.textContent = agent.name;
+    const welcomeDesc = document.getElementById('welcomeDesc');
+    if (welcomeDesc) welcomeDesc.textContent = agent.description || '';
+
+    // Reconnect with new session key if connected
+    if (this.connected) {
+      // Just update the session key - next message will use it
+      console.log('Switched to agent:', agent.name, 'session:', agent.sessionKey);
+    }
+  }
+
   renderChatList() {
-    // Separate pinned and unpinned
-    const allChats = Object.entries(this.chats);
+    // Render agent list + chats for active agent
+    const allChats = Object.entries(this.chats)
+      .filter(([_, c]) => {
+        // Show chats that belong to active agent, or legacy chats (no agentId) when on main
+        if (c.agentId) return c.agentId === this.activeAgentId;
+        return this.activeAgentId === 'main';
+      });
     const pinnedChats = allChats
       .filter(([_, c]) => c.pinned)
       .sort((a, b) => (a[1].pinnedOrder || 0) - (b[1].pinnedOrder || 0));
@@ -4547,6 +4384,20 @@ Example: [0, 2, 5]`;
 
     let html = '';
 
+    // Render agent list
+    if (this.agents.length > 1) {
+      html += '<div class="agent-section">';
+      html += '<div class="section-header">Workspaces</div>';
+      this.agents.forEach(agent => {
+        const isActive = agent.id === this.activeAgentId;
+        html += `<div class="agent-item ${isActive ? 'active' : ''}" data-agent-id="${agent.id}">
+          <span class="agent-icon">${agent.icon || ''}</span>
+          <span class="agent-name">${this.sanitize(agent.name)}</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+
     // Render pinned section
     if (pinnedChats.length > 0) {
       const visiblePinned = pinnedChats.slice(0, 5);
@@ -4587,7 +4438,15 @@ Example: [0, 2, 5]`;
       });
     }
 
-    this.elements.chatList.innerHTML = this.sanitize(html);
+    this.elements.chatList.innerHTML = html;
+
+    // Agent click handlers
+    this.elements.chatList.querySelectorAll('.agent-item').forEach(item => {
+      item.addEventListener('click', () => {
+        this.switchAgent(item.dataset.agentId);
+        this.elements.sidebar.classList.remove('open');
+      });
+    });
 
     // Add click handlers
     this.elements.chatList.querySelectorAll('.chat-item').forEach(item => {
@@ -4735,9 +4594,24 @@ Example: [0, 2, 5]`;
       }
     });
 
-    this.elements.messages.innerHTML = visibleMessages.map(({ msg, originalIdx }, displayIdx) => {
+    // Message virtualization: only render last N messages for performance
+    const MSG_PAGE_SIZE = 50;
+    const visibleCount = this._visibleMessageCount || MSG_PAGE_SIZE;
+    const startIdx = Math.max(0, visibleMessages.length - visibleCount);
+    const displayedMessages = visibleMessages.slice(startIdx);
+    const hasMore = startIdx > 0;
+
+    // "Load earlier" button
+    let loadMoreHtml = '';
+    if (hasMore) {
+      loadMoreHtml = `<div class="load-more-messages" id="loadMoreMessages">
+        <button class="load-more-btn">Load ${Math.min(MSG_PAGE_SIZE, startIdx)} earlier messages (${startIdx} hidden)</button>
+      </div>`;
+    }
+
+    this.elements.messages.innerHTML = loadMoreHtml + displayedMessages.map(({ msg, originalIdx }, displayIdx) => {
       const isUser = msg.role === 'user';
-      const isLastAssistant = !isUser && displayIdx === visibleMessages.length - 1;
+      const isLastAssistant = !isUser && displayIdx === displayedMessages.length - 1;
       const copyIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
       const speakIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`;
       const stopIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`;
@@ -4825,6 +4699,18 @@ Example: [0, 2, 5]`;
 
     this.scrollToBottom();
     this.highlightCode();
+  }
+
+  loadMoreMessages() {
+    const MSG_PAGE_SIZE = 50;
+    this._visibleMessageCount = (this._visibleMessageCount || MSG_PAGE_SIZE) + MSG_PAGE_SIZE;
+    // Remember scroll position to avoid jumping to bottom
+    const messagesEl = this.elements.messages;
+    const prevScrollHeight = messagesEl.scrollHeight;
+    this.renderMessages();
+    // Restore scroll position relative to where user was
+    const newScrollHeight = messagesEl.scrollHeight;
+    messagesEl.scrollTop = newScrollHeight - prevScrollHeight;
   }
 
   attachMessageActions() {
@@ -5057,6 +4943,7 @@ Example: [0, 2, 5]`;
         await new Promise(resolve => setTimeout(resolve, 500));
 
         switchedModel = model?.name || modelId;
+        this._userSelectedModel = true; // Don't override user's choice on reconnect
         console.log('Switched to model:', fullModelId);
       } catch (error) {
         console.error('Failed to set model:', error);
@@ -5131,6 +5018,9 @@ Example: [0, 2, 5]`;
         this.currentModelFamily = this.detectModelFamily(this.currentModelId);
         console.log('Current model:', this.currentModelId, 'Family:', this.currentModelFamily);
       }
+
+      // Don't auto-switch models - use whatever the gateway/session has configured
+      // User can switch via model selector if needed
     } catch (error) {
       console.error('Failed to fetch models:', error);
       this.allModels = [];
@@ -5345,31 +5235,9 @@ Example: [0, 2, 5]`;
     const voiceBtn = document.getElementById('voiceBtn');
     if (!voiceBtn) return;
 
-    // Check if we're on mobile with Capacitor
-    console.log('initVoiceInput: isMobile=', this.isMobile, 'Capacitor=', typeof Capacitor);
-    if (typeof Capacitor !== 'undefined') {
-      console.log('Capacitor.Plugins:', Object.keys(Capacitor.Plugins || {}));
-    }
-
-    // Try to get SpeechRecognition plugin - check multiple possible locations
-    let speechPlugin = null;
-    if (typeof Capacitor !== 'undefined') {
-      speechPlugin = Capacitor.Plugins?.SpeechRecognition ||
-                     window.Capacitor?.Plugins?.SpeechRecognition ||
-                     window.CapacitorCommunitySpeechRecognition;
-    }
-
-    if (this.isMobile && speechPlugin) {
-      console.log('Using Capacitor SpeechRecognition plugin');
-      this.initMobileVoiceInput(voiceBtn, speechPlugin);
-      return;
-    }
-
-    // Fallback to browser Web Speech API
-    console.log('Falling back to Web Speech API');
+    // Check for browser support
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      console.log('Web Speech API not available');
       voiceBtn.classList.add('unsupported');
       voiceBtn.title = 'Voice input not supported in this browser';
       return;
@@ -5440,333 +5308,6 @@ Example: [0, 2, 5]`;
     voiceBtn.addEventListener('click', () => this.toggleVoiceInput());
   }
 
-  // Mobile voice input using Capacitor Speech Recognition plugin
-  // Push-to-talk: hold to record, release to send
-  async initMobileVoiceInput(voiceBtn, speechPlugin) {
-    console.log('initMobileVoiceInput: starting with plugin:', !!speechPlugin);
-
-    this.mobileSpeech = speechPlugin;
-    this.isRecording = false;
-    this.micPermissionGranted = false;  // Track if we have permission
-    this.micPermissionChecked = false;  // Track if we've checked/requested
-
-    // Just check if available (don't request permission yet)
-    try {
-      const { available } = await this.mobileSpeech.available();
-      console.log('Speech recognition available:', available);
-      if (!available) {
-        console.log('Speech recognition not available on this device');
-        voiceBtn.classList.add('unsupported');
-        voiceBtn.title = 'Speech recognition not available';
-        return;
-      }
-
-      // Check current permission status without requesting
-      const permResult = await this.mobileSpeech.checkPermissions();
-      console.log('Speech permissions:', permResult);
-      if (permResult.speechRecognition === 'granted') {
-        this.micPermissionGranted = true;
-        this.micPermissionChecked = true;
-      }
-      // Don't request permission here - wait until user taps mic
-    } catch (e) {
-      console.error('Speech recognition init error:', e);
-      voiceBtn.classList.add('unsupported');
-      return;
-    }
-
-    // Listen for partial results while recording
-    console.log('Setting up speech recognition listeners...');
-    this.lastPartialResult = '';  // Store last partial result as fallback
-    this.acceptingPartialResults = false;  // Flag to control when we accept results
-    this.mobileSpeech.addListener('partialResults', (data) => {
-      // Voice chat mode takes priority
-      if (this.voiceChatActive && this.voiceChatState === 'LISTENING') {
-        this.handleVoiceChatPartialResult(data.matches);
-        return;
-      }
-
-      // Regular push-to-talk mode
-      // Only update if we're accepting results (recording or in processing window)
-      if (!this.acceptingPartialResults) {
-        console.log('Ignoring partial results (not accepting)');
-        return;
-      }
-      console.log('Partial results:', data);
-      if (data.matches && data.matches.length > 0) {
-        this.lastPartialResult = data.matches[0];
-        // Only update placeholder if still in recording state (not processing)
-        if (this.isRecording) {
-          this.elements.messageInput.placeholder = data.matches[0] + '...';
-        }
-      }
-    });
-
-    console.log('Push-to-talk initialized successfully');
-
-    // Double-tap detection for voice chat mode
-    this.lastTapTime = 0;
-    this.tapTimeout = null;
-    this.touchStartTime = 0;
-
-    // Push-to-talk: touchstart = start recording, touchend = stop and send
-    // Double-tap (two quick taps) = enter voice chat mode
-    voiceBtn.addEventListener('touchstart', (e) => {
-      e.preventDefault();
-      this.touchStartTime = Date.now();
-
-      // Start push-to-talk (will be cancelled if it's a quick tap)
-      this.pttDelayTimeout = setTimeout(() => {
-        this.startPushToTalk(voiceBtn);
-      }, 200); // Wait 200ms before starting PTT to detect quick taps
-    });
-
-    voiceBtn.addEventListener('touchend', (e) => {
-      e.preventDefault();
-      const touchDuration = Date.now() - this.touchStartTime;
-
-      // If touch was short (< 200ms), it's a tap, not a hold
-      if (touchDuration < 200) {
-        // Cancel the PTT start
-        if (this.pttDelayTimeout) {
-          clearTimeout(this.pttDelayTimeout);
-          this.pttDelayTimeout = null;
-        }
-
-        // Check for different tap scenarios
-        const now = Date.now();
-        
-        // If we're in voice chat mode and AI is speaking/streaming, interrupt
-        if (this.voiceChatActive && (this.voiceChatState === 'PROCESSING' || this.streaming)) {
-          console.log('Mic tap during streaming - interrupting to listen');
-          this.interruptAndListen();
-          return;
-        }
-        
-        // Check for double-tap to enter voice chat mode
-        if (now - this.lastTapTime < 400) {
-          // Double tap detected!
-          console.log('Double tap detected - entering voice chat mode');
-          this.lastTapTime = 0;
-          this.enterVoiceChatMode();
-        } else {
-          this.lastTapTime = now;
-        }
-      } else {
-        // It was a hold - do normal push-to-talk release
-        this.stopPushToTalkAndSend(voiceBtn);
-      }
-    });
-
-    voiceBtn.addEventListener('touchcancel', (e) => {
-      e.preventDefault();
-      if (this.pttDelayTimeout) {
-        clearTimeout(this.pttDelayTimeout);
-        this.pttDelayTimeout = null;
-      }
-      this.stopPushToTalkAndSend(voiceBtn);
-    });
-
-    // Also support mouse for testing
-    voiceBtn.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      this.touchStartTime = Date.now();
-      this.pttDelayTimeout = setTimeout(() => {
-        this.startPushToTalk(voiceBtn);
-      }, 200);
-    });
-
-    voiceBtn.addEventListener('mouseup', (e) => {
-      e.preventDefault();
-      const touchDuration = Date.now() - this.touchStartTime;
-
-      if (touchDuration < 200) {
-        if (this.pttDelayTimeout) {
-          clearTimeout(this.pttDelayTimeout);
-          this.pttDelayTimeout = null;
-        }
-
-        // Check for different tap scenarios
-        const now = Date.now();
-        
-        // If we're in voice chat mode and AI is speaking/streaming, interrupt
-        if (this.voiceChatActive && (this.voiceChatState === 'PROCESSING' || this.streaming)) {
-          console.log('Mic tap during streaming - interrupting to listen');
-          this.interruptAndListen();
-          return;
-        }
-        
-        // Check for double-tap to enter voice chat mode
-        if (now - this.lastTapTime < 400) {
-          console.log('Double tap detected - entering voice chat mode');
-          this.lastTapTime = 0;
-          this.enterVoiceChatMode();
-        } else {
-          this.lastTapTime = now;
-        }
-      } else {
-        this.stopPushToTalkAndSend(voiceBtn);
-      }
-    });
-
-    // Handle mouse leaving button while held - treat as release
-    voiceBtn.addEventListener('mouseleave', (e) => {
-      if (this.isRecording) {
-        this.stopPushToTalkAndSend(voiceBtn);
-      }
-    });
-  }
-
-  // Request microphone permission (called on first use)
-  async requestMicPermission() {
-    if (this.micPermissionGranted) return true;
-    if (!this.mobileSpeech) return false;
-
-    try {
-      console.log('Requesting microphone permission...');
-      const requestResult = await this.mobileSpeech.requestPermissions();
-      console.log('Permission request result:', requestResult);
-      this.micPermissionChecked = true;
-
-      if (requestResult.speechRecognition === 'granted') {
-        this.micPermissionGranted = true;
-        return true;
-      } else {
-        this.showToast('Microphone permission required for voice input', true);
-        return false;
-      }
-    } catch (e) {
-      console.error('Permission request error:', e);
-      this.showToast('Could not request microphone permission', true);
-      return false;
-    }
-  }
-
-  async startPushToTalk(voiceBtn) {
-    console.log('startPushToTalk called, mobileSpeech:', !!this.mobileSpeech, 'isRecording:', this.isRecording);
-    if (!this.mobileSpeech || this.isRecording) {
-      console.log('startPushToTalk: early return');
-      return;
-    }
-
-    // Request permission on first use
-    if (!this.micPermissionGranted) {
-      const granted = await this.requestMicPermission();
-      if (!granted) return;
-    }
-
-    try {
-      this.isRecording = true;
-      this.acceptingPartialResults = true;  // Start accepting partial results
-      this.speechStarted = false;  // Track if speech recognition actually started
-      voiceBtn.classList.add('recording');
-      this.elements.messageInput.placeholder = 'Listening...';
-
-      console.log('Starting speech recognition...');
-      await this.mobileSpeech.start({
-        language: navigator.language || 'en-US',
-        partialResults: true,
-        popup: false
-      });
-      console.log('Speech recognition started successfully');
-      this.speechStarted = true;  // Mark that we successfully started
-
-      // Safety timeout: if held for more than 30s, auto-stop
-      this.pttTimeout = setTimeout(() => {
-        if (this.isRecording) {
-          console.log('PTT timeout - auto-stopping');
-          this.stopPushToTalkAndSend(voiceBtn);
-        }
-      }, 30000);
-    } catch (e) {
-      console.error('Start recording error:', e);
-      this.resetPushToTalkState(voiceBtn);
-      this.showToast('Voice input error: ' + e.message, true);
-    }
-  }
-
-  resetPushToTalkState(voiceBtn) {
-    this.isRecording = false;
-    this.speechStarted = false;
-    this.acceptingPartialResults = false;
-    if (this.pttTimeout) {
-      clearTimeout(this.pttTimeout);
-      this.pttTimeout = null;
-    }
-    voiceBtn.classList.remove('recording');
-    voiceBtn.classList.remove('processing');
-    this.elements.messageInput.placeholder = 'Message ClawGPT...';
-  }
-
-  async stopPushToTalkAndSend(voiceBtn) {
-    console.log('stopPushToTalkAndSend called, mobileSpeech:', !!this.mobileSpeech, 'isRecording:', this.isRecording, 'speechStarted:', this.speechStarted);
-
-    // Always reset state, even if we think we're not recording
-    // (handles edge cases where state got out of sync)
-    if (!this.mobileSpeech) {
-      console.log('No mobileSpeech, resetting state');
-      this.resetPushToTalkState(voiceBtn);
-      return;
-    }
-
-    // If not recording, just make sure UI is reset
-    if (!this.isRecording) {
-      console.log('Not recording, resetting state');
-      this.resetPushToTalkState(voiceBtn);
-      return;
-    }
-
-    // Update button to show we're processing (but keep listening for a bit)
-    voiceBtn.classList.remove('recording');
-    voiceBtn.classList.add('processing');
-    this.elements.messageInput.placeholder = 'Processing...';
-
-    // Wait 1 second to catch trailing words from speech recognition
-    console.log('Waiting 1s for trailing words...');
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    // Stop accepting partial results
-    this.acceptingPartialResults = false;
-
-    // NOW capture the transcript (after waiting for late partial results)
-    const transcript = (this.lastPartialResult || '').trim();
-    console.log('Captured transcript from partial results:', transcript);
-
-    // Clear for next time
-    this.lastPartialResult = '';
-
-    // Reset UI state
-    voiceBtn.classList.remove('processing');
-    this.resetPushToTalkState(voiceBtn);
-
-    // Try to stop speech recognition (with timeout since it often hangs)
-    if (this.speechStarted) {
-      console.log('Stopping speech recognition (fire and forget)...');
-      // Don't await - just fire and forget with a timeout
-      const stopPromise = this.mobileSpeech.stop().catch(e => {
-        console.log('Stop error (ignored):', e.message);
-      });
-      // Set a timeout to abort waiting
-      Promise.race([
-        stopPromise,
-        new Promise(resolve => setTimeout(resolve, 500))
-      ]).then(() => {
-        console.log('Speech recognition stop completed or timed out');
-      });
-    }
-
-    // If we got a transcript, put it in the input and send
-    if (transcript) {
-      console.log('Sending transcript:', transcript);
-      this.elements.messageInput.value = transcript;
-      this.onInputChange();
-      // Auto-send the message
-      this.sendMessage();
-    } else {
-      console.log('No transcript to send');
-    }
-  }
-
   toggleVoiceInput() {
     if (!this.recognition) return;
 
@@ -5783,568 +5324,6 @@ Example: [0, 2, 5]`;
       }
     }
   }
-
-  // ==================== VOICE CHAT MODE ====================
-  // Continuous voice conversation: speak → AI responds with TTS → listen again
-
-  async enterVoiceChatMode() {
-    if (!this.mobileSpeech) {
-      this.showToast('Voice input not available', true);
-      return;
-    }
-
-    // Request permission on first use
-    if (!this.micPermissionGranted) {
-      const granted = await this.requestMicPermission();
-      if (!granted) return;
-    }
-
-    console.log('Entering voice chat mode');
-    this.voiceChatActive = true;
-    this.voiceChatState = 'LISTENING'; // LISTENING, PROCESSING, SPEAKING
-    this.voiceChatTranscript = '';
-    this.silenceTimeout = null;
-    
-    // Clear old stream buffer to prevent reading stale responses
-    this.streamBuffer = '';
-    this.streaming = false;
-    
-    // Streaming TTS state
-    this.ttsQueue = [];
-    this.ttsSpeaking = false;
-    this.ttsSpokenText = ''; // Track what we've already queued for TTS
-
-    // Create and show overlay
-    this.showVoiceChatOverlay();
-
-    // Start listening
-    this.startVoiceChatListening();
-  }
-
-  exitVoiceChatMode() {
-    console.log('Exiting voice chat mode');
-    this.voiceChatActive = false;
-    this.voiceChatState = null;
-    this.voiceChatPendingResponse = false;
-
-    // Stop any ongoing speech recognition
-    if (this.mobileSpeech) {
-      this.mobileSpeech.stop().catch(() => {});
-    }
-
-    // Stop any ongoing TTS
-    if (this.tts) {
-      this.tts.stop().catch(() => {});
-    }
-
-    // Clear timeouts
-    if (this.silenceTimeout) {
-      clearTimeout(this.silenceTimeout);
-      this.silenceTimeout = null;
-    }
-
-    // Clear voice chat checks
-    this.clearVoiceChatChecks();
-
-    // Remove overlay
-    this.hideVoiceChatOverlay();
-  }
-
-  showVoiceChatOverlay() {
-    // Remove existing overlay if any
-    const existing = document.getElementById('voiceChatOverlay');
-    if (existing) existing.remove();
-
-    const overlay = document.createElement('div');
-    overlay.id = 'voiceChatOverlay';
-    overlay.className = 'voice-chat-overlay';
-    overlay.innerHTML = `
-      <div class="voice-chat-content">
-        <button class="voice-chat-close" id="voiceChatClose">✕</button>
-        <div class="voice-chat-indicator" id="voiceChatIndicator">
-          <div class="voice-chat-icon listening">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
-              <line x1="12" y1="19" x2="12" y2="23"></line>
-              <line x1="8" y1="23" x2="16" y2="23"></line>
-            </svg>
-          </div>
-        </div>
-        <div class="voice-chat-status" id="voiceChatStatus">Listening...</div>
-        <div class="voice-chat-transcript" id="voiceChatTranscript"></div>
-      </div>
-    `;
-
-    document.body.appendChild(overlay);
-
-    // Add close handler
-    document.getElementById('voiceChatClose').addEventListener('click', () => {
-      this.exitVoiceChatMode();
-    });
-
-    // Add click handler for the big voice chat indicator (mic icon)
-    document.getElementById('voiceChatIndicator').addEventListener('click', () => {
-      console.log('Voice chat indicator tapped, current state:', this.voiceChatState);
-      
-      // If AI is speaking, interrupt and start listening
-      if (this.voiceChatState === 'SPEAKING') {
-        console.log('Interrupting AI speech to listen for new input');
-        this.interruptVoiceChatAndListen();
-      }
-    });
-
-    // Tap anywhere on overlay to exit (except on content)
-    overlay.addEventListener('click', (e) => {
-      if (e.target === overlay) {
-        this.exitVoiceChatMode();
-      }
-    });
-  }
-
-  hideVoiceChatOverlay() {
-    const overlay = document.getElementById('voiceChatOverlay');
-    if (overlay) {
-      overlay.classList.add('hiding');
-      setTimeout(() => overlay.remove(), 300);
-    }
-  }
-
-  updateVoiceChatUI(state, transcript = '') {
-    const indicator = document.getElementById('voiceChatIndicator');
-    const status = document.getElementById('voiceChatStatus');
-    const transcriptEl = document.getElementById('voiceChatTranscript');
-
-    if (!indicator || !status) return;
-
-    // Update icon class
-    indicator.querySelector('.voice-chat-icon').className = 'voice-chat-icon ' + state.toLowerCase();
-
-    // Update status text
-    const statusText = {
-      'LISTENING': 'Listening...',
-      'PROCESSING': 'Thinking...',
-      'SPEAKING': 'Speaking...'
-    };
-    status.textContent = statusText[state] || state;
-
-    // Update transcript
-    if (transcriptEl && transcript) {
-      transcriptEl.textContent = transcript;
-    }
-  }
-
-  async startVoiceChatListening() {
-    if (!this.voiceChatActive) return;
-
-    this.voiceChatState = 'LISTENING';
-    this.voiceChatTranscript = '';
-    this.voiceChatHasSpoken = false;  // Track if user has started speaking
-    this.updateVoiceChatUI('LISTENING');
-
-    // Clear any existing silence timer
-    if (this.silenceTimeout) {
-      clearTimeout(this.silenceTimeout);
-      this.silenceTimeout = null;
-    }
-
-    try {
-      // Start speech recognition
-      await this.mobileSpeech.start({
-        language: navigator.language || 'en-US',
-        partialResults: true,
-        popup: false
-      });
-
-      console.log('Voice chat: listening started');
-
-      // DON'T start silence timer here - wait until user starts speaking
-      // The timer will be started in handleVoiceChatPartialResult
-
-    } catch (e) {
-      console.error('Voice chat: failed to start listening', e);
-      this.showToast('Failed to start listening', true);
-      this.exitVoiceChatMode();
-    }
-  }
-
-  resetSilenceTimer() {
-    // Clear existing timer
-    if (this.silenceTimeout) {
-      clearTimeout(this.silenceTimeout);
-    }
-
-    // Set new timer - if no speech for 1.5s, send the message
-    this.silenceTimeout = setTimeout(() => {
-      if (this.voiceChatActive && this.voiceChatState === 'LISTENING' && this.voiceChatTranscript) {
-        console.log('Voice chat: silence detected, sending message');
-        this.sendVoiceChatMessage();
-      }
-    }, 1500);
-  }
-
-  handleVoiceChatPartialResult(matches) {
-    if (!this.voiceChatActive || this.voiceChatState !== 'LISTENING') return;
-
-    if (matches && matches.length > 0 && matches[0]) {
-      const transcript = matches[0].trim();
-
-      // Ignore empty results
-      if (!transcript) return;
-
-      // Mark that user has started speaking
-      if (!this.voiceChatHasSpoken) {
-        this.voiceChatHasSpoken = true;
-        console.log('Voice chat: user started speaking');
-      }
-
-      this.voiceChatTranscript = transcript;
-      this.updateVoiceChatUI('LISTENING', this.voiceChatTranscript);
-
-      // Reset silence timer on each result (only once user has started speaking)
-      this.resetSilenceTimer();
-    }
-  }
-
-  async sendVoiceChatMessage() {
-    console.log('sendVoiceChatMessage called, voiceChatActive:', this.voiceChatActive, 'transcript:', this.voiceChatTranscript?.substring(0, 50));
-
-    if (!this.voiceChatActive) {
-      console.log('Voice chat: not active, aborting send');
-      return;
-    }
-
-    const message = (this.voiceChatTranscript || '').trim();
-    if (!message) {
-      console.log('Voice chat: no message to send, resuming listening');
-      // No message, just resume listening
-      this.startVoiceChatListening();
-      return;
-    }
-
-    this.voiceChatState = 'PROCESSING';
-    this.updateVoiceChatUI('PROCESSING', message);
-    console.log('Voice chat: set state to PROCESSING');
-    
-    // Clear old stream buffer to prevent replaying previous responses
-    this.streamBuffer = '';
-    this.streaming = false;
-    
-    // Clear streaming TTS state for new message
-    this.ttsQueue = [];
-    this.ttsSpeaking = false;
-    this.ttsSpokenText = '';
-    this.voiceChatStreamingDone = false;
-    
-    // Track when we sent this message to avoid replaying old responses
-    this.voiceChatMessageTime = Date.now();
-
-    // Stop speech recognition (fire and forget - don't await since it can hang)
-    console.log('Voice chat: stopping speech recognition...');
-    this.mobileSpeech.stop().catch(e => {
-      console.log('Voice chat: stop error (ignored):', e.message);
-    });
-
-    console.log('Voice chat: sending message:', message);
-
-    // Set up a fallback check - if still processing after 5 seconds, check for response
-    this.voiceChatProcessingTimeout = setTimeout(() => {
-      this.checkForVoiceChatResponse();
-    }, 5000);
-
-    // Also check periodically
-    this.voiceChatCheckInterval = setInterval(() => {
-      this.checkForVoiceChatResponse();
-    }, 2000);
-
-    // Send via relay (same as regular messages)
-    if (this.relayEncrypted && this.relayWs) {
-      // Store callback to handle response
-      this.voiceChatPendingResponse = true;
-
-      // Generate chat ID if needed
-      if (!this.currentChatId) {
-        this.currentChatId = this.generateId();
-      }
-
-      // Send to desktop
-      console.log('[Relay] Voice chat sending message to desktop, relayWs state:', this.relayWs?.readyState, 'encrypted:', this.relayEncrypted);
-      this.sendRelayMessage({
-        type: 'user-message',
-        chatId: this.currentChatId,
-        content: message
-      });
-      console.log('[Relay] Voice chat message sent');
-
-    } else {
-      this.showToast('Not connected', true);
-      this.exitVoiceChatMode();
-    }
-  }
-
-  // Streaming TTS: speak next sentence in queue
-  async speakNextInQueue() {
-    if (!this.voiceChatActive || this.ttsQueue.length === 0) {
-      this.ttsSpeaking = false;
-      
-      // If streaming is done and queue is empty, resume listening
-      if (this.voiceChatStreamingDone) {
-        console.log('Streaming TTS: all done, resuming listening');
-        this.voiceChatPendingResponse = false;
-        this.voiceChatStreamingDone = false;
-        this.ttsSpokenText = '';
-        this.startVoiceChatListening();
-      }
-      return;
-    }
-
-    this.ttsSpeaking = true;
-    this.voiceChatState = 'SPEAKING';
-    this.updateVoiceChatUI('SPEAKING');
-
-    // Initialize TTS if needed
-    if (!this.tts && typeof Capacitor !== 'undefined' && Capacitor.Plugins?.TextToSpeech) {
-      this.tts = Capacitor.Plugins.TextToSpeech;
-    }
-
-    if (!this.tts) {
-      console.log('TTS not available');
-      this.ttsSpeaking = false;
-      return;
-    }
-
-    const text = this.ttsQueue.shift();
-    const cleanText = this.stripMarkdownForTTS(text);
-    
-    if (!cleanText) {
-      // Skip empty text, try next in queue
-      this.speakNextInQueue();
-      return;
-    }
-
-    try {
-      console.log('Streaming TTS: speaking:', cleanText.substring(0, 50) + '...');
-      
-      await this.tts.speak({
-        text: cleanText,
-        lang: 'en-GB',
-        rate: 1.0,
-        pitch: 1.0,
-        volume: 1.0,
-        category: 'playback'
-      });
-
-      // Speak next in queue (or finish)
-      this.speakNextInQueue();
-
-    } catch (e) {
-      console.error('Streaming TTS error:', e);
-      this.ttsSpeaking = false;
-      // Try to continue with next sentence
-      if (this.ttsQueue.length > 0) {
-        this.speakNextInQueue();
-      }
-    }
-  }
-
-  async speakVoiceChatResponse(text) {
-    if (!this.voiceChatActive) return;
-
-    this.voiceChatState = 'SPEAKING';
-    this.updateVoiceChatUI('SPEAKING');
-
-    // Initialize TTS if needed
-    if (!this.tts && typeof Capacitor !== 'undefined' && Capacitor.Plugins?.TextToSpeech) {
-      this.tts = Capacitor.Plugins.TextToSpeech;
-    }
-
-    if (!this.tts) {
-      console.log('TTS not available, resuming listening');
-      this.startVoiceChatListening();
-      return;
-    }
-
-    try {
-      // Try to get available voices and find Google UK Female
-      let voiceToUse = null;
-      try {
-        const voices = await this.tts.getSupportedVoices();
-        console.log('Available TTS voices:', voices.voices?.length);
-
-        // Look for Google UK Female voice
-        if (voices.voices) {
-          voiceToUse = voices.voices.find(v =>
-            v.name?.toLowerCase().includes('google') &&
-            v.name?.toLowerCase().includes('uk') &&
-            v.name?.toLowerCase().includes('female')
-          );
-
-          // Fallback: any UK English Google voice
-          if (!voiceToUse) {
-            voiceToUse = voices.voices.find(v =>
-              v.lang?.startsWith('en-GB') &&
-              v.name?.toLowerCase().includes('google')
-            );
-          }
-
-          // Fallback: any UK English voice
-          if (!voiceToUse) {
-            voiceToUse = voices.voices.find(v => v.lang?.startsWith('en-GB'));
-          }
-
-          if (voiceToUse) {
-            console.log('Selected voice:', voiceToUse.name, voiceToUse.lang);
-          }
-        }
-      } catch (e) {
-        console.log('Could not get voices:', e.message);
-      }
-
-      console.log('Voice chat: speaking response');
-      const speakOptions = {
-        text: text,
-        lang: 'en-GB',
-        rate: 1.0,
-        pitch: 1.0,
-        volume: 1.0,
-        category: 'playback'
-      };
-
-      // Add voice if we found a preferred one
-      if (voiceToUse) {
-        speakOptions.voice = voiceToUse.voiceURI || voiceToUse.name;
-      }
-
-      await this.tts.speak(speakOptions);
-
-      console.log('Voice chat: finished speaking');
-
-      // Resume listening after TTS completes
-      if (this.voiceChatActive) {
-        this.startVoiceChatListening();
-      }
-
-    } catch (e) {
-      console.error('Voice chat: TTS error', e);
-      // Resume listening even if TTS fails
-      if (this.voiceChatActive) {
-        this.startVoiceChatListening();
-      }
-    }
-  }
-
-  // Check if there's a response we missed while in PROCESSING state
-  checkForVoiceChatResponse() {
-    if (!this.voiceChatActive || this.voiceChatState !== 'PROCESSING') {
-      this.clearVoiceChatChecks();
-      return;
-    }
-
-    // If streaming TTS is active, let it handle everything
-    if (this.ttsSpeaking || (this.ttsQueue && this.ttsQueue.length > 0)) {
-      console.log('Voice chat: streaming TTS active, skipping check');
-      return;
-    }
-
-    console.log('Voice chat: checking for missed response...');
-
-    // Check if there's an assistant message we haven't spoken yet
-    const chat = this.chats[this.currentChatId];
-    if (chat && chat.messages && chat.messages.length > 0) {
-      // Find the MOST RECENT assistant message that we haven't spoken
-      for (let i = chat.messages.length - 1; i >= 0; i--) {
-        const msg = chat.messages[i];
-        if (msg.role === 'assistant' && msg.content) {
-          // Check if this is a NEW message (after we started processing)
-          const msgTime = msg.timestamp || 0;
-          const voiceChatStartTime = this.voiceChatMessageTime || 0;
-          
-          if (msgTime > voiceChatStartTime) {
-            console.log('Voice chat: found NEW assistant message to speak');
-            this.handleVoiceChatResponse(msg.content);
-            return;
-          } else {
-            console.log('Voice chat: skipping old assistant message');
-            break; // Don't replay old messages
-          }
-        }
-        if (msg.role === 'user') {
-          // Don't look past the last user message
-          break;
-        }
-      }
-    }
-
-    // Also check if streaming just finished and there's content
-    if (!this.streaming && this.streamBuffer) {
-      console.log('Voice chat: found stream buffer content');
-      this.handleVoiceChatResponse(this.streamBuffer);
-    }
-  }
-
-  clearVoiceChatChecks() {
-    if (this.voiceChatProcessingTimeout) {
-      clearTimeout(this.voiceChatProcessingTimeout);
-      this.voiceChatProcessingTimeout = null;
-    }
-    if (this.voiceChatCheckInterval) {
-      clearInterval(this.voiceChatCheckInterval);
-      this.voiceChatCheckInterval = null;
-    }
-  }
-
-  // Called when we receive a response from the relay
-  handleVoiceChatResponse(content) {
-    if (!this.voiceChatActive) return;
-
-    // Clear the checking interval
-    this.clearVoiceChatChecks();
-
-    // Only process if we're still waiting for a response
-    if (!this.voiceChatPendingResponse && this.voiceChatState !== 'PROCESSING') return;
-
-    this.voiceChatPendingResponse = false;
-
-    // Strip markdown and clean up text for TTS
-    const cleanText = this.stripMarkdownForTTS(content);
-
-    if (cleanText) {
-      this.speakVoiceChatResponse(cleanText);
-    } else {
-      // No text to speak, resume listening
-      this.startVoiceChatListening();
-    }
-  }
-
-  stripMarkdownForTTS(text) {
-    if (!text) return '';
-
-    return text
-      // Remove code blocks
-      .replace(/```[\s\S]*?```/g, 'code block omitted')
-      // Remove inline code
-      .replace(/`[^`]+`/g, '')
-      // Remove markdown links, keep text
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      // Remove images
-      .replace(/!\[[^\]]*\]\([^)]+\)/g, '')
-      // Remove bold/italic markers
-      .replace(/\*\*([^*]+)\*\*/g, '$1')
-      .replace(/\*([^*]+)\*/g, '$1')
-      .replace(/__([^_]+)__/g, '$1')
-      .replace(/_([^_]+)_/g, '$1')
-      // Remove headers
-      .replace(/^#+\s*/gm, '')
-      // Remove bullet points
-      .replace(/^[\s]*[-*+]\s+/gm, '')
-      // Remove numbered lists
-      .replace(/^[\s]*\d+\.\s+/gm, '')
-      // Collapse multiple newlines
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-  }
-
-  // ==================== END VOICE CHAT MODE ====================
 
   // Image Upload
   initImageUpload() {
@@ -6973,42 +5952,38 @@ Example: [0, 2, 5]`;
     }, 50);
   }
 
-  scrollToBottom(force = false) {
-    // Use requestAnimationFrame to ensure DOM has updated
-    requestAnimationFrame(() => {
-      const el = this.elements.messages;
-      if (!el) return;
-
-      // Always scroll if forced or if we're streaming
-      if (force || this.streaming) {
-        el.scrollTop = el.scrollHeight;
-        return;
-      }
-
-      // Otherwise, only auto-scroll if user is already near the bottom
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-      if (isNearBottom) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
+  scrollToBottom() {
+    this.elements.messages.scrollTop = this.elements.messages.scrollHeight;
   }
 
-  async sendMessage() {
-    const text = this.elements.messageInput.value.trim();
+  async sendMessage(textOverride = null) {
+    // Allow passing text directly (for relay messages) or read from input
+    const text = textOverride !== null ? textOverride : this.elements.messageInput.value.trim();
     const hasImages = this.pendingImages && this.pendingImages.length > 0;
     const hasTextFiles = this.pendingTextFiles && this.pendingTextFiles.length > 0;
 
     // Need either text, images, or text files
     if (!text && !hasImages && !hasTextFiles) return;
 
-    // THIN CLIENT MODE: If connected via relay, send to desktop and let it handle everything
-    if (this.relayEncrypted && this.relayWs) {
-      this.sendMessageViaRelay(text);
+    // If already streaming, queue this message and wait for current to finish
+    if (this.streaming) {
+      console.log('Already streaming, queuing message');
+      this._pendingSend = { text, images: this.pendingImages, textFiles: this.pendingTextFiles };
       return;
     }
 
-    // Regular mode requires gateway connection
-    if (!this.connected) return;
+    // If gateway is disconnected, try to reconnect
+    if (!this.connected) {
+      console.log('Gateway not connected, attempting reconnect...');
+      this.showToast('Reconnecting to gateway...', true);
+      await this.connect();
+      // If still not connected after attempt, bail
+      if (!this.connected) {
+        console.error('Failed to reconnect to gateway');
+        this.showToast('Gateway connection failed', true);
+        return;
+      }
+    }
 
     // Clear input
     this.elements.messageInput.value = '';
@@ -7023,7 +5998,8 @@ Example: [0, 2, 5]`;
         title: (text || 'Image').slice(0, 30) + ((text || '').length > 30 ? '...' : ''),
         messages: [],
         createdAt: Date.now(),
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        agentId: this.activeAgentId
       };
     }
 
@@ -7092,6 +6068,7 @@ Example: [0, 2, 5]`;
     // Note: We don't persist full image data to save storage
     // Just store filenames for reference
     const userMsg = {
+      id: 'msg-' + Date.now(),
       role: 'user',
       content: displayContent || '[File]',
       imageNames: images?.map(img => img.name || 'image') || [], // Store names only
@@ -7107,7 +6084,17 @@ Example: [0, 2, 5]`;
     }
     this.chats[this.currentChatId].messages.push(userMsg);
     this.chats[this.currentChatId].updatedAt = Date.now();
-    this.saveChats(this.currentChatId);  // Broadcast to peer
+    this.saveChats(); // Save without broadcasting full chat
+
+    // Send only the new message to phone (not entire chat)
+    if (this.relayEncrypted) {
+      this.sendRelayMessage({
+        type: 'chat-update',
+        chatId: this.currentChatId,
+        message: userMsg,
+        chatTitle: this.chats[this.currentChatId].title
+      });
+    }
 
     // Store in clawgpt-memory for search
     const chat = this.chats[this.currentChatId];
@@ -7131,26 +6118,27 @@ Example: [0, 2, 5]`;
     try {
       // Check if we're switching to a different chat
       const switchingChats = this.lastGatewayChat && this.lastGatewayChat !== this.currentChatId;
-      
-      // If switching chats, clear gateway and include context from this chat
-      if (switchingChats) {
-        console.log('Switching chats, clearing gateway and including context');
-        await this.sendForgetCommand();
-      }
-      
+
       // Build the message with context if needed
       let finalMessage = messageContent;
-      
+
       // Include chat context if:
       // 1. Switching to a different chat (gateway was just cleared)
       // 2. Or this is the first message in this chat with gateway connected
       const needsContext = switchingChats || !this.lastGatewayChat;
-      
+
       if (needsContext && this.currentChatId) {
         const chat = this.chats[this.currentChatId];
         // Get messages BEFORE the one we just added
         const historyMessages = chat.messages.slice(0, -1);
         if (historyMessages.length > 0) {
+          // Only send /forget if we have context to inject
+          // (avoids "Session cleared" response for new empty chats)
+          if (switchingChats) {
+            console.log('Switching chats with history, clearing gateway');
+            await this.sendForgetCommand();
+          }
+
           const context = this.buildChatContext({ messages: historyMessages });
           if (context) {
             // Prepend conversation context
@@ -7159,10 +6147,10 @@ Example: [0, 2, 5]`;
           }
         }
       }
-      
+
       // Update tracking
       this.lastGatewayChat = this.currentChatId;
-      
+
       // Track input tokens
       this.addTokens(this.estimateTokens(finalMessage || ''));
 
@@ -7189,78 +6177,6 @@ Example: [0, 2, 5]`;
     }
   }
 
-  // THIN CLIENT: Send message to desktop for processing
-  sendMessageViaRelay(text) {
-    // Gather attachments before clearing
-    const hasImages = this.pendingImages && this.pendingImages.length > 0;
-    const hasTextFiles = this.pendingTextFiles && this.pendingTextFiles.length > 0;
-    
-    // Build attachments for relay (same format as gateway)
-    let attachments = null;
-    if (hasImages) {
-      attachments = this.pendingImages.map(img => {
-        const parsed = this.parseDataUrl(img.base64);
-        return {
-          type: 'image',
-          mimeType: parsed.mimeType,
-          content: parsed.content // base64 without data: prefix
-        };
-      });
-    }
-    
-    // Build text file content
-    let fullText = text;
-    if (hasTextFiles) {
-      const fileContents = this.pendingTextFiles.map(f =>
-        `--- ${f.name} ---\n${f.content}\n--- end ${f.name} ---`
-      ).join('\n\n');
-      fullText = text ? `${fileContents}\n\n${text}` : fileContents;
-    }
-    
-    // Clear input and reset placeholder (in case voice input left something)
-    this.elements.messageInput.value = '';
-    this.elements.messageInput.placeholder = 'Message ClawGPT...';
-    this.elements.messageInput.style.height = 'auto';
-    this.elements.sendBtn.disabled = true;
-    
-    // Clear pending attachments and preview
-    this.pendingImages = [];
-    this.pendingTextFiles = [];
-    this.updateFilePreview();
-
-    // Generate chat ID if needed
-    if (!this.currentChatId) {
-      this.currentChatId = this.generateId();
-    }
-
-    // Send to desktop - it will create the chat, forward to gateway, and broadcast updates
-    const message = {
-      type: 'user-message',
-      chatId: this.currentChatId,
-      content: fullText
-    };
-    
-    // Include attachments if present
-    if (attachments && attachments.length > 0) {
-      message.attachments = attachments;
-    }
-    
-    this.sendRelayMessage(message);
-
-    console.log('[Relay] Sent message to desktop', attachments ? `with ${attachments.length} attachment(s)` : '');
-
-    // Show waiting indicator
-    this.streaming = true;
-    this.streamBuffer = '';
-    this.updateStreamingUI();
-    this.renderMessages();
-
-    // Re-enable send button after a short delay
-    setTimeout(() => {
-      this.elements.sendBtn.disabled = false;
-    }, 500);
-  }
-
   stopGeneration() {
     if (!this.streaming) return;
 
@@ -7275,44 +6191,16 @@ Example: [0, 2, 5]`;
   }
 
   updateStreamingUI() {
-    const wasStreaming = this._wasStreaming;
-    this._wasStreaming = this.streaming;
-
     this.elements.sendBtn.style.display = this.streaming ? 'none' : 'flex';
     this.elements.stopBtn.style.display = this.streaming ? 'flex' : 'none';
     this.onInputChange();
-
-    // If streaming just ended and voice chat is waiting for a response
-    if (wasStreaming && !this.streaming && this.voiceChatActive && this.voiceChatPendingResponse) {
-      // Skip if streaming TTS already handled this (check if we spoke anything)
-      if (this.ttsSpokenText || this.ttsSpeaking || (this.ttsQueue && this.ttsQueue.length > 0)) {
-        console.log('Streaming ended - streaming TTS already handling response');
-        return;
-      }
-      
-      console.log('Streaming ended, checking for response to speak');
-      // Get the last assistant message from current chat
-      const chat = this.chats[this.currentChatId];
-      if (chat && chat.messages && chat.messages.length > 0) {
-        const lastMsg = chat.messages[chat.messages.length - 1];
-        if (lastMsg.role === 'assistant' && lastMsg.content) {
-          // Check timestamp to avoid replaying old responses after interrupt
-          const msgTime = lastMsg.timestamp || Date.now();
-          const voiceChatStartTime = this.voiceChatMessageTime || 0;
-          
-          if (msgTime >= voiceChatStartTime) {
-            console.log('Found assistant message, triggering voice response');
-            this.handleVoiceChatResponse(lastMsg.content);
-          } else {
-            console.log('Ignoring stale assistant message after interrupt');
-          }
-        }
-      }
-    }
   }
 
   handleChatEvent(payload) {
     if (!payload) return;
+
+    console.log('Chat event received:', payload.state, 'sessionKey:', payload.sessionKey);
+    console.log('Raw payload:', JSON.stringify(payload).substring(0, 500));
 
     const state = payload.state;
     const content = this.extractContent(payload.message?.content);
@@ -7333,14 +6221,33 @@ Example: [0, 2, 5]`;
       return;
     }
 
-    if (payload.sessionKey && payload.sessionKey !== this.sessionKey) {
+    // Check if this event is for our session (handle both short and full session keys)
+    if (payload.sessionKey &&
+        payload.sessionKey !== this.sessionKey &&
+        !payload.sessionKey.endsWith(':' + this.sessionKey)) {
+      console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
       return; // Different session
     }
 
     if (state === 'delta' && content) {
       this.streamBuffer = content;
       this.updateStreamingMessage();
+
+      // Forward streaming to phone (throttled to 100ms)
+      if (this.relayEncrypted && this.currentChatId) {
+        const now = Date.now();
+        if (!this.lastStreamingRelay || now - this.lastStreamingRelay >= 100) {
+          this.lastStreamingRelay = now;
+          this.sendRelayMessage({
+            type: 'chat-update',
+            chatId: this.currentChatId,
+            streaming: true,
+            content: this.streamBuffer
+          });
+        }
+      }
     } else if (state === 'final' || state === 'aborted' || state === 'error') {
+      console.log('End event received, streaming state:', this.streaming);
       if (!this.streaming) {
         console.log('Ignoring duplicate end event - not streaming');
         return;
@@ -7350,6 +6257,7 @@ Example: [0, 2, 5]`;
 
       // Use final content if available (more complete), fall back to buffer
       const finalContent = content || this.streamBuffer;
+      console.log('Final content length:', finalContent?.length, 'content:', content?.substring(0, 100), 'buffer:', this.streamBuffer?.substring(0, 100));
 
       if (state === 'error') {
         this.addAssistantMessage('Error: ' + (payload.errorMessage || 'Unknown error'));
@@ -7360,6 +6268,26 @@ Example: [0, 2, 5]`;
       }
 
       this.streamBuffer = '';
+
+      // Process queued message if any
+      if (this._pendingSend) {
+        const pending = this._pendingSend;
+        this._pendingSend = null;
+        console.log('Processing queued message');
+        // Small delay to let UI update before sending next
+        setTimeout(() => this.sendMessage(pending.text), 100);
+      }
+
+      // Process queued phone messages if any
+      if (this.phoneMessageQueue && this.phoneMessageQueue.length > 0) {
+        const nextMessage = this.phoneMessageQueue.shift();
+        console.log('Processing queued phone message');
+
+        // Small delay to let UI update, then process next phone message
+        setTimeout(() => {
+          this.sendPhoneMessageWithRetry(nextMessage.content, nextMessage.chatId, nextMessage.attachments);
+        }, 200); // Slightly longer delay to avoid conflicts with regular queue
+      }
     }
   }
 
@@ -7388,9 +6316,9 @@ Example: [0, 2, 5]`;
     };
     this.chats[this.currentChatId].messages.push(assistantMsg);
     this.chats[this.currentChatId].updatedAt = Date.now();
-    this.saveChats(this.currentChatId);
+    this.saveChats(); // Save without broadcasting full chat (incremental relay below)
 
-    // Broadcast to phone via relay
+    // Send only the new message to phone (not the entire chat)
     if (this.relayEncrypted) {
       this.sendRelayMessage({
         type: 'chat-update',

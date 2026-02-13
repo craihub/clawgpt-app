@@ -101,8 +101,8 @@
 
       <div class="messages" id="messages">
         <div class="welcome" id="welcome">
-          <h2>ClawGT</h2>
-          <p>A familiar UI for OpenClaw with extra features</p>
+          <h2 id="welcomeTitle">ClawGT</h2>
+          <p id="welcomeDesc">A familiar UI for OpenClaw with extra features</p>
         </div>
       </div>
 
@@ -252,9 +252,42 @@
           <span class="setting-hint">Export saves all chats to a JSON file. Import merges chats from a file.</span>
         </div>
         <div class="settings-divider"></div>
-        <div class="settings-section-title">Pairing</div>
+        <div class="settings-section-title">Persistent Backup</div>
+        <div class="form-group">
+          <div class="file-memory-status">
+            <span id="fileMemoryStatus"><span style="color: var(--text-muted);">Not configured</span></span>
+          </div>
+          <p id="fileMemoryHint" style="font-size: 12px; color: var(--text-muted); margin: 4px 0 8px 0;">
+            <strong>Chrome/Edge only:</strong> Navigate to Documents → select <code style="background: var(--bg-secondary); padding: 2px 4px; border-radius: 3px;">clawgpt-memory</code>
+          </p>
+          <div class="button-group">
+            <button class="data-btn" id="enableFileMemoryBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              Select Folder
+            </button>
+            <button class="data-btn" id="syncFileMemoryBtn" style="display: none;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <polyline points="23 4 23 10 17 10"/>
+                <polyline points="1 20 1 14 7 14"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+              </svg>
+              Sync Now
+            </button>
+          </div>
+          <span class="setting-hint">Survives browser resets. Firefox/Brave/Safari: use Export/Import above instead.</span>
+        </div>
+        <div class="settings-divider"></div>
+        <div class="settings-section-title">Mobile Access</div>
+        <div class="form-group">
+          <label class="relay-toggle-label">
+            <input type="checkbox" id="relayModeToggle">
+            <span>Remote Access (works from anywhere)</span>
+          </label>
+          <span class="setting-hint">Enable to use ClawGT on your phone from anywhere, not just your home WiFi</span>
+        </div>
         <div class="form-group mobile-access">
-          <!-- Desktop: Show QR for phone to scan -->
           <div class="qr-container" id="qrContainer">
             <div class="qr-placeholder" id="qrPlaceholder">
               <button class="data-btn" id="showQrBtn">
@@ -272,49 +305,9 @@
             </div>
             <div class="qr-code" id="qrCode" style="display:none;"></div>
           </div>
-          <!-- Mobile: Scan QR from desktop -->
-          <div class="scan-qr-container" id="scanQrContainer" style="display:none;">
-            <button class="data-btn" id="settingsScanQrBtn">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-                <rect x="3" y="3" width="7" height="7"></rect>
-                <rect x="14" y="3" width="7" height="7"></rect>
-                <rect x="3" y="14" width="7" height="7"></rect>
-                <rect x="14" y="14" width="3" height="3"></rect>
-                <rect x="18" y="14" width="3" height="3"></rect>
-                <rect x="14" y="18" width="3" height="3"></rect>
-                <rect x="18" y="18" width="3" height="3"></rect>
-              </svg>
-              Scan QR to Pair
-            </button>
-            <span class="setting-hint">Scan the QR code shown on desktop ClawGT to pair devices</span>
-          </div>
-          <span class="setting-hint" id="qrDesktopHint">Scan with your phone to open ClawGT on mobile (same WiFi network)</span>
-          <span class="setting-hint warning" id="qrWarningHint">⚠️ Don't share this QR code — it contains your auth token</span>
+          <span class="setting-hint" id="qrHintLocal">Scan with your phone to open ClawGT on mobile (same WiFi network)</span>
+          <span class="setting-hint warning">⚠️ Don't share this QR code — it contains your auth token</span>
           <div class="mobile-url" id="mobileUrl"></div>
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-section-title">Security</div>
-        <div class="form-group">
-          <span class="setting-hint" id="verifyCodeDisplay">Verification: Not connected</span>
-        </div>
-        <div class="settings-divider"></div>
-        <div class="settings-section-title">Debug</div>
-        <div class="form-group data-actions">
-          <button class="data-btn" id="copyLogsBtn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
-            </svg>
-            Copy Logs
-          </button>
-          <button class="data-btn" id="clearLogsBtn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            </svg>
-            Clear Logs
-          </button>
-          <span class="setting-hint" id="logCount">Logs: 0 entries</span>
         </div>
         <div class="settings-actions">
           <button class="save-btn" id="saveSettingsBtn">Save</button>
@@ -387,40 +380,16 @@
     </div>
   </div>
 
-  <!-- Help Modal -->
+  <!-- Shortcuts Modal -->
   <div class="modal" id="shortcutsModal">
     <div class="modal-content modal-small">
       <div class="modal-header">
-        <h2>Help</h2>
+        <h2>Keyboard Shortcuts</h2>
         <button class="close-btn" id="closeShortcuts">&times;</button>
       </div>
       <div class="modal-body shortcuts-body">
-        <!-- Mobile gestures (shown on mobile) -->
-        <div class="shortcut-group" id="mobileGesturesGroup" style="display:none;">
-          <div class="shortcut-group-title">Gestures</div>
-          <div class="shortcut-row">
-            <span class="shortcut-desc">Open sidebar</span>
-            <span class="shortcut-keys"><kbd>Swipe right</kbd></span>
-          </div>
-          <div class="shortcut-row">
-            <span class="shortcut-desc">Close sidebar</span>
-            <span class="shortcut-keys"><kbd>Swipe left</kbd></span>
-          </div>
-        </div>
-        <div class="shortcut-group" id="voiceGroup" style="display:none;">
-          <div class="shortcut-group-title">Voice</div>
-          <div class="shortcut-row">
-            <span class="shortcut-desc">Push to talk</span>
-            <span class="shortcut-keys"><kbd>Hold mic</kbd></span>
-          </div>
-          <div class="shortcut-row">
-            <span class="shortcut-desc">Conversation mode</span>
-            <span class="shortcut-keys"><kbd>Double-tap mic</kbd></span>
-          </div>
-        </div>
-        <!-- Desktop shortcuts -->
-        <div class="shortcut-group" id="desktopShortcutsGroup">
-          <div class="shortcut-group-title">Keyboard</div>
+        <div class="shortcut-group">
+          <div class="shortcut-group-title">General</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Send message</span>
             <span class="shortcut-keys"><kbd>Enter</kbd></span>
@@ -434,7 +403,7 @@
             <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>N</kbd></span>
           </div>
         </div>
-        <div class="shortcut-group" id="searchShortcutsGroup">
+        <div class="shortcut-group">
           <div class="shortcut-group-title">Search</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Open search</span>
@@ -453,7 +422,7 @@
             <span class="shortcut-keys"><kbd>Enter</kbd></span>
           </div>
         </div>
-        <div class="shortcut-group" id="editingShortcutsGroup">
+        <div class="shortcut-group">
           <div class="shortcut-group-title">Editing</div>
           <div class="shortcut-row">
             <span class="shortcut-desc">Send edited message</span>
@@ -467,7 +436,7 @@
         <div class="shortcut-group">
           <div class="shortcut-group-title">This modal</div>
           <div class="shortcut-row">
-            <span class="shortcut-desc">Show help</span>
+            <span class="shortcut-desc">Show shortcuts</span>
             <span class="shortcut-keys"><kbd>?</kbd></span>
           </div>
         </div>
@@ -475,66 +444,147 @@
     </div>
   </div>
 
-  <!-- Setup Modal (normie-friendly) -->
+  <!-- Setup Wizard Modal -->
   <div class="modal" id="setupModal">
-    <div class="modal-content setup-modal-content">
+    <div class="modal-content setup-wizard">
       <div class="modal-header">
-        <h2>Connect to ClawGT</h2>
+        <h2>👋 Welcome to ClawGT</h2>
       </div>
-      <div class="modal-body setup-body">
+      <div class="modal-body">
+        <p class="setup-intro">Let's connect to your OpenClaw. Just two quick steps!</p>
         
-        <!-- Primary: QR Scan -->
-        <div class="setup-primary" id="setupPrimary">
-          <button class="setup-scan-btn" id="scanQrBtn">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="48" height="48">
-              <rect x="3" y="3" width="7" height="7"></rect>
-              <rect x="14" y="3" width="7" height="7"></rect>
-              <rect x="3" y="14" width="7" height="7"></rect>
-              <rect x="14" y="14" width="3" height="3"></rect>
-              <rect x="18" y="14" width="3" height="3"></rect>
-              <rect x="14" y="18" width="3" height="3"></rect>
-              <rect x="18" y="18" width="3" height="3"></rect>
-            </svg>
-            <span>Scan QR Code</span>
-          </button>
-          <p class="setup-hint">Open <strong>ClawGT</strong> on your computer, go to <strong>Settings</strong>, and scan the QR code shown there.</p>
+        <!-- Step 1: Get Token -->
+        <div class="setup-step-box">
+          <div class="setup-step-header">
+            <span class="setup-step-number">1</span>
+            <span class="setup-step-title">Get your token</span>
+          </div>
+          <div class="setup-step-content">
+            <div class="ask-openclaw-row">
+              <span class="ask-label">Ask OpenClaw:</span>
+              <code class="ask-phrase" id="askTokenPhrase">What's my gateway token?</code>
+              <button type="button" class="copy-btn" data-copy="What's my gateway token?" title="Copy to clipboard">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                  <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                </svg>
+              </button>
+            </div>
+            <div class="token-input-wrapper">
+              <input type="password" id="setupAuthToken" placeholder="Paste your token here">
+              <span class="token-status" id="tokenStatus"></span>
+            </div>
+          </div>
         </div>
         
-        <!-- Secondary: Advanced Setup -->
-        <div class="setup-secondary">
-          <button class="setup-advanced-toggle" id="advancedSetupToggle">
-            Manual Setup
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-              <polyline points="6 9 12 15 18 9"></polyline>
-            </svg>
-          </button>
+        <!-- Step 2: Save Config -->
+        <div class="setup-step-box">
+          <div class="setup-step-header">
+            <span class="setup-step-number">2</span>
+            <span class="setup-step-title">Save the config file</span>
+          </div>
+          <div class="setup-step-content">
+            <button class="save-btn setup-save-btn" id="setupSaveConfigBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;margin-right:6px;">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Download config.js
+            </button>
+            <div class="setup-folder-instructions" id="setupFolderInstructions">
+              <p>Then move it to your ClawGT folder:</p>
+              <div class="ask-openclaw-row">
+                <span class="ask-label">Ask OpenClaw:</span>
+                <code class="ask-phrase" id="askFolderPhrase">Open my clawgpt folder</code>
+                <button type="button" class="copy-btn" data-copy="Open my clawgpt folder" title="Copy to clipboard">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                  </svg>
+                </button>
+              </div>
+              <p class="setup-folder-hint">Drag the downloaded file into the folder that opens.</p>
+            </div>
+          </div>
         </div>
         
-        <!-- Advanced fields (hidden by default) -->
-        <div class="setup-advanced-fields" id="advancedSetupFields" style="display: none;">
-          <div class="form-group">
-            <label for="setupGatewayUrl">Gateway URL</label>
-            <input type="text" id="setupGatewayUrl" placeholder="ws://192.168.1.100:18789">
+        <!-- Step 3: Set up clawgpt-memory -->
+        <div class="setup-step-box">
+          <div class="setup-step-header">
+            <span class="setup-step-number">3</span>
+            <span class="setup-step-title">Set up chat memory</span>
+            <span class="setup-step-badge">Recommended</span>
           </div>
-          <div class="form-group">
-            <label for="setupAuthToken">Auth Token</label>
-            <input type="password" id="setupAuthToken" placeholder="Your gateway token">
+          <div class="setup-step-content">
+            <p class="setup-memory-desc">Sync conversations across devices & let your AI agent read your history.</p>
+            <button class="data-btn setup-memory-btn" id="setupMemoryBtn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              Select clawgpt-memory folder
+            </button>
+            <span class="setup-memory-status" id="setupMemoryStatus"></span>
+            <p class="setup-memory-hint">Create a folder called <code>clawgpt-memory</code> in your ClawGT folder, then select it.</p>
           </div>
-          <div class="form-group">
-            <label for="setupSessionKey">Session Key</label>
-            <input type="text" id="setupSessionKey" placeholder="main" value="main">
-          </div>
-          <button class="save-btn" id="setupSaveBtn">Connect</button>
         </div>
         
-        <!-- Debug: Copy Logs + Reset buttons -->
-        <div class="setup-debug" style="margin-top: 20px; padding-top: 15px; border-top: 1px solid var(--border-color); display: flex; gap: 10px;">
-          <button class="copy-logs-btn" id="setupCopyLogsBtn" style="flex: 1; padding: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 6px; cursor: pointer;">
-            Copy Logs
-          </button>
-          <button class="reset-btn" id="setupResetBtn" style="flex: 1; padding: 10px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); border-radius: 6px; cursor: pointer;">
-            Reset
-          </button>
+        <!-- Connect -->
+        <div class="setup-step" id="setupStep1">
+          <div class="setup-actions">
+            <button class="save-btn" id="setupConnectBtn">Connect</button>
+          </div>
+          <p class="setup-refresh-hint">Or just refresh this page after saving the file.</p>
+        </div>
+        
+        <!-- Hidden fields for compatibility -->
+        <input type="hidden" id="setupGatewayUrl" value="ws://127.0.0.1:18789">
+        <input type="hidden" id="setupSessionKey" value="main">
+        
+        <!-- Success state -->
+        <div class="setup-step" id="setupStep2" style="display:none;">
+          <div class="setup-success">
+            <div class="setup-success-icon">✓</div>
+            <div class="setup-success-text">Connected!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memory Setup Modal (Chrome) -->
+  <div class="modal" id="memorySetupModal">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h2>📁 Sync Your Chats</h2>
+      </div>
+      <div class="modal-body" style="text-align: center; padding: 20px;">
+        <p style="margin-bottom: 16px;">ClawGT can sync conversations across devices.</p>
+        <p style="margin-bottom: 20px; color: var(--text-muted); font-size: 14px;">
+          Navigate to <strong>Documents</strong> → select <strong>clawgpt-memory</strong>
+        </p>
+        <div style="display: flex; gap: 10px; justify-content: center;">
+          <button class="secondary-btn" id="memorySetupSkip">Later</button>
+          <button class="primary-btn" id="memorySetupConfirm">Select Folder</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Setup Modal (Firefox/Brave) -->
+  <div class="modal" id="importSetupModal">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h2>📥 Restore Your Chats</h2>
+      </div>
+      <div class="modal-body" style="text-align: center; padding: 20px;">
+        <p style="margin-bottom: 16px;">Have a ClawGT backup? Import it to restore your chats.</p>
+        <p style="margin-bottom: 20px; color: var(--text-muted); font-size: 14px;">
+          Go to Settings → Import Chats
+        </p>
+        <div style="display: flex; gap: 10px; justify-content: center;">
+          <button class="secondary-btn" id="importSetupSkip">Later</button>
+          <button class="primary-btn" id="importSetupConfirm">Open Settings</button>
         </div>
       </div>
     </div>
@@ -552,6 +602,7 @@
   <script src="lib/relay-crypto.js"></script>
   <script src="lib/purify.min.js"></script>
   
+  <script src="agents-config.js" onerror="/* agents-config.js is optional */"></script>
   <script src="config.js" onerror="/* config.js is optional */"></script>
   <script src="error-handler.js"></script>
   <script src="chat-storage.js"></script>
