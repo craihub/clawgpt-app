@@ -2241,6 +2241,16 @@ window.CLAWGPT_CONFIG = {
   handleRelayMessage(msg) {
     // SIMPLIFIED PROTOCOL
 
+    // Ignore gateway-response from phone (phone shouldn't send these to host)
+    if (msg.type === 'gateway-response') {
+      return;
+    }
+
+    // Ignore full-state from phone (host is the source of truth)
+    if (msg.type === 'full-state') {
+      return;
+    }
+
     // Phone requests full state (on connect or reconnect)
     if (msg.type === 'request-state') {
       console.log('[Relay] Phone requested state');
@@ -2287,6 +2297,13 @@ window.CLAWGPT_CONFIG = {
       if (msg.data.method === 'chat.send' && msg.data.params?.message) {
         console.log('[Relay] Intercepting chat.send from phone, routing through handlePhoneMessage');
         const chatId = msg.data.params.idempotencyKey || ('phone-' + Date.now());
+
+        // Send ack back to phone so its request() promise resolves
+        this.sendRelayMessage({
+          type: 'gateway-response',
+          data: { type: 'res', id: msg.data.id, ok: true, payload: { type: 'chat.send-ok' } }
+        });
+
         this.handlePhoneMessage({
           chatId: chatId,
           content: msg.data.params.message,
