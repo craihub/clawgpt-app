@@ -2162,6 +2162,14 @@ window.CLAWGPT_CONFIG = {
         this._lastPhoneChatId = chatId;
       }
 
+      // Clear streaming state when receiving assistant message via relay
+      // (phone set streaming=true when it sent the message, desktop handled it)
+      if (msg.message.role === 'assistant' && this.streaming && !msg.streaming) {
+        this.streaming = false;
+        this.streamBuffer = '';
+        this.updateStreamingUI();
+      }
+
       if (!this.chats[chatId]) {
         // Create chat if it doesn't exist yet
         this.chats[chatId] = {
