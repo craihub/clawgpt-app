@@ -6216,15 +6216,23 @@ Example: [0, 2, 5]`;
 
     // Create chat if needed
     if (!this.currentChatId) {
-      this.currentChatId = this.generateId();
-      this.chats[this.currentChatId] = {
-        id: this.currentChatId,
-        title: (text || 'Image').slice(0, 30) + ((text || '').length > 30 ? '...' : ''),
-        messages: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        agentId: this.activeAgentId
-      };
+      // Look for the most recent existing chat in this workspace first
+      const agentChats = Object.values(this.chats)
+        .filter(c => c.agentId === this.activeAgentId || (!c.agentId && this.activeAgentId === 'main'))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      if (agentChats.length > 0) {
+        this.currentChatId = agentChats[0].id;
+      } else {
+        this.currentChatId = this.generateId();
+        this.chats[this.currentChatId] = {
+          id: this.currentChatId,
+          title: (text || 'Image').slice(0, 30) + ((text || '').length > 30 ? '...' : ''),
+          messages: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          agentId: this.activeAgentId
+        };
+      }
     }
 
     // Build message content
