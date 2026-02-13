@@ -866,7 +866,35 @@ window.CLAWGPT_CONFIG = {
       total += this.estimateTokens(this.streamBuffer);
     }
 
-    chatTokensEl.textContent = `~${this.formatTokenCount(total)} tokens`;
+    // Show as countdown to compaction (200K context window)
+    const contextLimit = 200000;
+    const remaining = Math.max(0, contextLimit - total);
+    const pct = Math.round((remaining / contextLimit) * 100);
+
+    // Compaction warning at thresholds (only fire once per threshold)
+    if (!this._compactionWarned) this._compactionWarned = {};
+    if (pct <= 10 && !this._compactionWarned[10]) {
+      this._compactionWarned[10] = true;
+      this.showToast('Compaction imminent (~10% context remaining). Request a fingerprint now.', true);
+    } else if (pct <= 20 && !this._compactionWarned[20]) {
+      this._compactionWarned[20] = true;
+      this.showToast('Context running low (~20% remaining). Consider a fingerprint soon.');
+    }
+
+    // Color-code: green > 50%, yellow 20-50%, orange 10-20%, red < 10%
+    let color = '';
+    if (pct <= 10) color = 'var(--error, #e74c3c)';
+    else if (pct <= 20) color = '#e67e22';
+    else if (pct <= 50) color = '#f39c12';
+
+    chatTokensEl.textContent = `~${this.formatTokenCount(remaining)} remaining`;
+    if (color) {
+      chatTokensEl.style.color = color;
+      chatTokensEl.title = `~${pct}% context remaining. Consider taking a fingerprint before compaction.`;
+    } else {
+      chatTokensEl.style.color = '';
+      chatTokensEl.title = `~${this.formatTokenCount(total)} tokens used of ~200K context`;
+    }
     chatTokensEl.style.display = 'block';
   }
 
