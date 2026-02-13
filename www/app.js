@@ -6298,8 +6298,17 @@ Example: [0, 2, 5]`;
     if (payload.sessionKey &&
         payload.sessionKey !== this.sessionKey &&
         !payload.sessionKey.endsWith(':' + this.sessionKey)) {
-      console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
-      return; // Different session
+      // Forward to relay client if connected (phone may use a different session key)
+      if (this.relayEncrypted && payload.sessionKey !== '__clawgpt_summarizer') {
+        console.log('Forwarding event to relay client:', payload.sessionKey);
+        this.sendRelayMessage({
+          type: 'gateway-response',
+          data: msg
+        });
+      } else {
+        console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
+      }
+      return; // Different session - don't process locally
     }
 
     if (state === 'delta' && content) {
