@@ -2282,7 +2282,19 @@ window.CLAWGPT_CONFIG = {
 
     // Handle gateway request from phone (desktop proxies to gateway)
     if (msg.type === 'gateway-request' && msg.data) {
-      // Forward to gateway
+      // Intercept chat.send - route through handlePhoneMessage so desktop
+      // manages streaming state, chat creation, and response forwarding
+      if (msg.data.method === 'chat.send' && msg.data.params?.message) {
+        console.log('[Relay] Intercepting chat.send from phone, routing through handlePhoneMessage');
+        const chatId = msg.data.params.idempotencyKey || ('phone-' + Date.now());
+        this.handlePhoneMessage({
+          chatId: chatId,
+          content: msg.data.params.message,
+          agentId: msg.data.params.sessionKey ? this.agents.find(a => a.sessionKey === msg.data.params.sessionKey)?.id : undefined
+        });
+        return;
+      }
+      // Forward other requests to gateway
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify(msg.data));
       }
