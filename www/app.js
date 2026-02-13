@@ -1351,9 +1351,17 @@ window.CLAWGPT_CONFIG = {
 
   connectToRelayRoom(relayUrl, roomId) {
     return new Promise((resolve, reject) => {
-      // Close existing relay connection
+      // Cancel any pending auto-reconnect
+      if (this._relayReconnectTimer) {
+        clearTimeout(this._relayReconnectTimer);
+        this._relayReconnectTimer = null;
+      }
+
+      // Close existing relay connection (mark intentional to skip auto-reconnect)
       if (this.relayWs) {
+        this._relayIntentionalClose = true;
         this.relayWs.close();
+        this._relayIntentionalClose = false;
       }
 
       // Reset encryption state
@@ -1451,13 +1459,14 @@ window.CLAWGPT_CONFIG = {
 
       this.relayWs.onclose = () => {
         console.log('Relay connection closed');
+        const wasIntentional = this._relayIntentionalClose;
         this.relayWs = null;
         this.relayEncrypted = false;
         // Don't destroy relayCrypto - may be reused for reconnection
 
-        // Auto-reconnect as host with exponential backoff
+        // Auto-reconnect as host with exponential backoff (skip if intentionally closed)
         const saved = this.getSavedRelayConnection();
-        if (saved && this.relayRole === 'host') {
+        if (saved && this.relayRole === 'host' && !wasIntentional) {
           const delay = Math.min(3000 * Math.pow(2, (this._relayReconnectAttempts || 0)), 60000);
           this._relayReconnectAttempts = (this._relayReconnectAttempts || 0) + 1;
           console.log(`Relay auto-reconnect in ${delay/1000}s (attempt ${this._relayReconnectAttempts})`);
@@ -2260,7 +2269,12 @@ window.CLAWGPT_CONFIG = {
 
   // Handle message from phone - create chat if needed and forward to gateway
   handlePhoneMessage(msg) {
-    const { chatId, content, attachments } = msg;
+    const { chatId, content, attachments, agentId } = msg;
+
+    // If phone specifies an agent, switch to it on desktop too
+    if (agentId && agentId !== this.activeAgentId) {
+      this.switchAgent(agentId);
+    }
 
     // Create chat if it doesn't exist
     if (!this.chats[chatId]) {
@@ -2269,7 +2283,8 @@ window.CLAWGPT_CONFIG = {
         title: (content || 'Image').substring(0, 30) + ((content || '').length > 30 ? '...' : ''),
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        messages: []
+        messages: [],
+        agentId: this.activeAgentId
       };
     }
 
@@ -2652,8 +2667,11 @@ window.CLAWGPT_CONFIG = {
       settingsResetRelayBtn.addEventListener('click', () => {
         if (confirm('Reset relay connection? You will need to scan QR again.')) {
           localStorage.removeItem('clawgpt-relay');
+          localStorage.removeItem('clawgpt-relay-server');
+          localStorage.removeItem('clawgpt-relay-room');
           localStorage.removeItem('clawgpt-pairing-id');
-          if (this.relayWs) { this.relayWs.close(); this.relayWs = null; }
+          if (this._relayReconnectTimer) { clearTimeout(this._relayReconnectTimer); this._relayReconnectTimer = null; }
+          if (this.relayWs) { this._relayIntentionalClose = true; this.relayWs.close(); this.relayWs = null; }
           this.relayEncrypted = false;
           this.relayIsGatewayProxy = false;
           this.showToast('Relay reset. Scan QR to reconnect.');
@@ -3926,6 +3944,9 @@ Example: [0, 2, 5]`;
         } else {
           pending.reject(new Error(msg.error?.message || 'Request failed'));
         }
+      } else if (this.relayEncrypted) {
+        // Response not for us - forward to phone (it may have sent a gateway-request)
+        this.sendRelayMessage({ type: 'gateway-response', data: msg });
       }
 
       // Handle hello-ok
@@ -6303,7 +6324,7 @@ Example: [0, 2, 5]`;
         console.log('Forwarding event to relay client:', payload.sessionKey);
         this.sendRelayMessage({
           type: 'gateway-response',
-          data: msg
+          data: { type: 'event', event: 'chat', payload }
         });
       } else {
         console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
