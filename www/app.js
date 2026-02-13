@@ -2602,6 +2602,65 @@ window.CLAWGPT_CONFIG = {
       });
     }
 
+    // Settings screen Copy Logs button
+    const settingsCopyLogsBtn = document.getElementById('settingsCopyLogsBtn');
+    if (settingsCopyLogsBtn) {
+      settingsCopyLogsBtn.addEventListener('click', () => {
+        const fullLog = [
+          '=== ClawGT Debug Log (Settings) ===',
+          'Time: ' + new Date().toISOString(),
+          'UserAgent: ' + navigator.userAgent,
+          'Platform: ' + (navigator.platform || 'unknown'),
+          'URL: ' + window.location.href,
+          'Connected: ' + this.connected,
+          'RelayEncrypted: ' + this.relayEncrypted,
+          'RelayIsProxy: ' + this.relayIsGatewayProxy,
+          'RelayWS: ' + (this.relayWs ? 'state=' + this.relayWs.readyState : 'null'),
+          'GatewayWS: ' + (this.ws ? 'state=' + this.ws.readyState : 'null'),
+          'SessionKey: ' + this.sessionKey,
+          'ActiveAgent: ' + this.activeAgentId,
+          'isMobile: ' + this.isMobile,
+          '',
+          '=== Errors ===',
+          ...(window._clawgptErrors || ['(none)']),
+          '',
+          '=== Recent Logs ===',
+          ...(window._clawgptLogs || ['(none)']).slice(-100)
+        ].join('\n');
+
+        navigator.clipboard.writeText(fullLog).then(() => {
+          settingsCopyLogsBtn.textContent = 'Copied!';
+          setTimeout(() => settingsCopyLogsBtn.textContent = 'Copy Logs', 2000);
+        }).catch(() => {
+          const ta = document.createElement('textarea');
+          ta.value = fullLog;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          settingsCopyLogsBtn.textContent = 'Copied!';
+          setTimeout(() => settingsCopyLogsBtn.textContent = 'Copy Logs', 2000);
+        });
+      });
+    }
+
+    // Settings Reset Relay button
+    const settingsResetRelayBtn = document.getElementById('settingsResetRelayBtn');
+    if (settingsResetRelayBtn) {
+      settingsResetRelayBtn.addEventListener('click', () => {
+        if (confirm('Reset relay connection? You will need to scan QR again.')) {
+          localStorage.removeItem('clawgpt-relay');
+          localStorage.removeItem('clawgpt-pairing-id');
+          if (this.relayWs) { this.relayWs.close(); this.relayWs = null; }
+          this.relayEncrypted = false;
+          this.relayIsGatewayProxy = false;
+          this.showToast('Relay reset. Scan QR to reconnect.');
+        }
+      });
+    }
+
     // Clear logs button
     const clearLogsBtn = document.getElementById('clearLogsBtn');
     if (clearLogsBtn) {
