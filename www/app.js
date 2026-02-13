@@ -866,9 +866,11 @@ window.CLAWGPT_CONFIG = {
       total += this.estimateTokens(this.streamBuffer);
     }
 
-    // Show as countdown to compaction (200K context window)
-    const contextLimit = 200000;
-    const remaining = Math.max(0, contextLimit - total);
+    // Use real gateway token count if available, otherwise estimate from local messages
+    const gatewayTokens = this._gatewayContextTokens;
+    const contextLimit = this._gatewayContextWindow || 200000;
+    const usedTokens = gatewayTokens || total;
+    const remaining = Math.max(0, contextLimit - usedTokens);
     const pct = Math.round((remaining / contextLimit) * 100);
 
     // Compaction warning at thresholds (only fire once per threshold)
@@ -887,13 +889,14 @@ window.CLAWGPT_CONFIG = {
     else if (pct <= 20) color = '#e67e22';
     else if (pct <= 50) color = '#f39c12';
 
-    chatTokensEl.textContent = `~${this.formatTokenCount(remaining)} remaining`;
+    const prefix = gatewayTokens ? '' : '~';
+    chatTokensEl.textContent = `${prefix}${this.formatTokenCount(remaining)} remaining`;
     if (color) {
       chatTokensEl.style.color = color;
-      chatTokensEl.title = `~${pct}% context remaining. Consider taking a fingerprint before compaction.`;
+      chatTokensEl.title = `${pct}% context remaining (${this.formatTokenCount(usedTokens)}/${this.formatTokenCount(contextLimit)}). Consider taking a fingerprint before compaction.`;
     } else {
       chatTokensEl.style.color = '';
-      chatTokensEl.title = `~${this.formatTokenCount(total)} tokens used of ~200K context`;
+      chatTokensEl.title = `${this.formatTokenCount(usedTokens)} / ${this.formatTokenCount(contextLimit)} tokens used${gatewayTokens ? ' (live)' : ' (estimate)'}`;
     }
     chatTokensEl.style.display = 'block';
   }
@@ -5206,12 +5209,45 @@ Example: [0, 2, 5]`;
         this.currentModelFamily = this.detectModelFamily(this.currentModelId);
         console.log('Current model:', this.currentModelId, 'Family:', this.currentModelFamily);
       }
+      // Capture gateway token counts for accurate compaction countdown
+      this.updateGatewayTokens(status);
 
       // Don't auto-switch models - use whatever the gateway/session has configured
       // User can switch via model selector if needed
     } catch (error) {
       console.error('Failed to fetch models:', error);
       this.allModels = [];
+    }
+  }
+
+  updateGatewayTokens(status) {
+    if (!status) return;
+    // Extract token info from gateway status
+    const session = status?.session || status?.sessions?.current;
+    if (session?.contextTokens !== undefined) {
+      this._gatewayContextTokens = session.contextTokens;
+      console.log('Gateway context tokens:', session.contextTokens);
+    }
+    if (session?.contextWindow !== undefined) {
+      this._gatewayContextWindow = session.contextWindow;
+    }
+    // Also check the tokens field format from sessions list
+    if (status?.sessions?.list) {
+      const current = status.sessions.list.find(s => s.key === this.sessionKey);
+      if (current?.contextTokens !== undefined) {
+        this._gatewayContextTokens = current.contextTokens;
+      }
+    }
+    this.updateTokenDisplay();
+  }
+
+  async pollGatewayTokens() {
+    if (!this.connected && !this.relayIsGatewayProxy) return;
+    try {
+      const status = await this.request('status', {});
+      this.updateGatewayTokens(status);
+    } catch (e) {
+      // Silent fail - just use estimate
     }
   }
 
@@ -6534,6 +6570,9 @@ Example: [0, 2, 5]`;
     ).catch(err => console.warn('Memory storage failed:', err));
 
     this.renderMessages();
+
+    // Poll gateway for real token count after each message
+    this.pollGatewayTokens();
 
     // Check if we should generate/update summary
     this.maybeGenerateSummary(this.currentChatId);
