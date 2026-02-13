@@ -2156,6 +2156,12 @@ window.CLAWGPT_CONFIG = {
     // Handle incremental message updates (single message added)
     if (msg.chatId && msg.message && !msg.chat) {
       const chatId = msg.chatId;
+
+      // Track phone's chatId for user messages (used by chat.send intercept)
+      if (msg.message.role === 'user') {
+        this._lastPhoneChatId = chatId;
+      }
+
       if (!this.chats[chatId]) {
         // Create chat if it doesn't exist yet
         this.chats[chatId] = {
@@ -2296,7 +2302,11 @@ window.CLAWGPT_CONFIG = {
       // manages streaming state, chat creation, and response forwarding
       if (msg.data.method === 'chat.send' && msg.data.params?.message) {
         console.log('[Relay] Intercepting chat.send from phone, routing through handlePhoneMessage');
-        const chatId = msg.data.params.idempotencyKey || ('phone-' + Date.now());
+
+        // Use the phone's chatId if we got a chat-update just before this
+        // (phone sends chat-update with user msg, then chat.send for gateway)
+        const chatId = this._lastPhoneChatId || msg.data.params.idempotencyKey || ('phone-' + Date.now());
+        this._lastPhoneChatId = null;
 
         // Send ack back to phone so its request() promise resolves
         this.sendRelayMessage({
@@ -2333,7 +2343,7 @@ window.CLAWGPT_CONFIG = {
       this.switchAgent(agentId);
     }
 
-    // Create chat if it doesn't exist
+    // Create chat if it doesn't exist (chat-update may have already created it)
     if (!this.chats[chatId]) {
       this.chats[chatId] = {
         id: chatId,
@@ -2431,17 +2441,36 @@ window.CLAWGPT_CONFIG = {
         });
       }
 
-      // Call original sendMessage (this adds user message and starts streaming)
-      // If we have attachments from phone, temporarily set them as pending
-      if (attachments && attachments.length > 0) {
-        // Convert relay attachments to pendingImages format
-        this.pendingImages = attachments.map(att => ({
-          base64: `data:${att.mimeType};base64,${att.content}`,
-          mimeType: att.mimeType,
-          name: 'image'
-        }));
+      // Send directly to gateway (don't use sendMessage which adds user msg to chat again)
+      // The phone's chat-update already added the user message to this.chats
+      this.currentChatId = chatId;
+      this.streaming = true;
+      this.streamBuffer = '';
+      this.updateStreamingUI();
+      this.renderMessages();
+      this.lastGatewayChat = chatId;
+
+      try {
+        const params = {
+          sessionKey: this.sessionKey,
+          message: content,
+          deliver: false,
+          idempotencyKey: this.generateId()
+        };
+        if (attachments && attachments.length > 0) {
+          params.attachments = attachments.map(att => ({
+            data: att.content,
+            mimeType: att.mimeType
+          }));
+        }
+        console.log('Sending phone message to gateway:', JSON.stringify(params).substring(0, 200));
+        await this.request('chat.send', params);
+      } catch (sendError) {
+        console.error('Gateway send failed:', sendError);
+        this.streaming = false;
+        this.updateStreamingUI();
+        this.addAssistantMessage('Error: ' + sendError.message);
       }
-      this.sendMessage(content);
 
     } catch (error) {
       console.error('Phone message send failed:', error);
