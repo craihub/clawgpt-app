@@ -1354,8 +1354,13 @@ window.CLAWGPT_CONFIG = {
           if (msg.type === 'encrypted' && this.relayEncrypted) {
             const decrypted = this.relayCrypto.openEnvelope(msg);
             if (decrypted) {
-              // Phone is client - use client-side handler
-              this.handleRelayClientMessage(decrypted);
+              console.log('[Relay] Received encrypted message type:', decrypted.type);
+              // Route based on role: host uses handleRelayMessage, client uses handleRelayClientMessage
+              if (this.relayRole === 'host') {
+                this.handleRelayMessage(decrypted);
+              } else {
+                this.handleRelayClientMessage(decrypted);
+              }
             } else {
               console.error('Failed to decrypt relay message');
             }
@@ -1537,7 +1542,11 @@ window.CLAWGPT_CONFIG = {
         if (msg.type === 'encrypted' && this.relayEncrypted) {
           const decrypted = this.relayCrypto.openEnvelope(msg);
           if (decrypted) {
-            this.handleRelayClientMessage(decrypted);
+            if (this.relayRole === 'host') {
+              this.handleRelayMessage(decrypted);
+            } else {
+              this.handleRelayClientMessage(decrypted);
+            }
           }
           return;
         }
@@ -1749,7 +1758,11 @@ window.CLAWGPT_CONFIG = {
         if (msg.type === 'encrypted' && this.relayEncrypted) {
           const decrypted = this.relayCrypto.openEnvelope(msg);
           if (decrypted) {
-            this.handleRelayClientMessage(decrypted);
+            if (this.relayRole === 'host') {
+              this.handleRelayMessage(decrypted);
+            } else {
+              this.handleRelayClientMessage(decrypted);
+            }
           } else {
             console.error('Failed to decrypt relay message');
           }
