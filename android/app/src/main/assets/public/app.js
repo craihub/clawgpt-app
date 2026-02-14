@@ -2378,7 +2378,8 @@ window.CLAWGPT_CONFIG = {
           title: newMsg.content?.substring(0, 30) || 'New Chat',
           messages: [],
           createdAt: Date.now(),
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
+          agentId: this.activeAgentId || 'main'
         };
       }
 
@@ -2556,7 +2557,8 @@ window.CLAWGPT_CONFIG = {
         title: content.substring(0, 30) + (content.length > 30 ? '...' : ''),
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        messages: []
+        messages: [],
+        agentId: this.activeAgentId || 'main'
       };
     }
 
@@ -2657,21 +2659,76 @@ window.CLAWGPT_CONFIG = {
     }, 3000);
   }
 
-  // Populate agent list in sidebar (display only, no switching)
+  // Populate agent list in sidebar with switching support
   initAgentList() {
     const agents = window.CLAWGT_AGENTS;
     if (!agents || agents.length === 0) return;
+
+    this.agents = agents;
+    this.activeAgentId = localStorage.getItem('clawgt-active-agent') || 'main';
+
+    // Set sessionKey from active agent
+    const activeAgent = agents.find(a => a.id === this.activeAgentId);
+    if (activeAgent) {
+      this.sessionKey = activeAgent.sessionKey;
+    }
 
     const agentList = document.getElementById('agentList');
     if (!agentList) return;
 
     agentList.style.display = 'flex';
     agentList.innerHTML = agents.map(agent =>
-      `<div class="agent-item${agent.id === 'main' ? ' active' : ''}" data-agent-id="${agent.id}">
+      `<div class="agent-item${agent.id === this.activeAgentId ? ' active' : ''}" data-agent-id="${agent.id}">
         <span class="agent-icon">${agent.icon || ''}</span>
         <span class="agent-name">${agent.name}</span>
       </div>`
     ).join('');
+
+    // Click handlers for switching
+    agentList.addEventListener('click', (e) => {
+      const item = e.target.closest('.agent-item');
+      if (!item) return;
+      this.switchAgent(item.dataset.agentId);
+    });
+  }
+
+  switchAgent(agentId) {
+    if (!this.agents || agentId === this.activeAgentId) return;
+
+    const agent = this.agents.find(a => a.id === agentId);
+    if (!agent) return;
+
+    this.activeAgentId = agentId;
+    this.sessionKey = agent.sessionKey;
+    localStorage.setItem('clawgt-active-agent', agentId);
+
+    // Update active highlight
+    document.querySelectorAll('.agent-item').forEach(el => {
+      el.classList.toggle('active', el.dataset.agentId === agentId);
+    });
+
+    // Find most recent chat for this agent, or clear
+    const agentChats = Object.entries(this.chats)
+      .filter(([_, c]) => (c.agentId || 'main') === agentId)
+      .sort((a, b) => (b[1].updatedAt || 0) - (a[1].updatedAt || 0));
+
+    this.currentChatId = agentChats.length > 0 ? agentChats[0][0] : null;
+
+    // Re-render
+    this.renderChatList();
+    this.renderMessages();
+
+    // Update session key in UI input if it exists
+    if (this.elements.sessionKeyInput) {
+      this.elements.sessionKeyInput.value = agent.sessionKey;
+    }
+
+    // Reconnect gateway with new session key
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.sendConnect();
+    }
+
+    console.log('Switched to agent:', agent.name, 'session:', agent.sessionKey);
   }
 
   // UI initialization
@@ -4508,8 +4565,12 @@ Example: [0, 2, 5]`;
   }
 
   renderChatList() {
+    // Filter by active agent if multi-agent enabled
+    const filtered = this.agents
+      ? Object.entries(this.chats).filter(([_, c]) => (c.agentId || 'main') === this.activeAgentId)
+      : Object.entries(this.chats);
     // Separate pinned and unpinned
-    const allChats = Object.entries(this.chats);
+    const allChats = filtered;
     const pinnedChats = allChats
       .filter(([_, c]) => c.pinned)
       .sort((a, b) => (a[1].pinnedOrder || 0) - (b[1].pinnedOrder || 0));
@@ -7041,7 +7102,8 @@ Example: [0, 2, 5]`;
         title: (text || 'Image').slice(0, 30) + ((text || '').length > 30 ? '...' : ''),
         messages: [],
         createdAt: Date.now(),
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        agentId: this.activeAgentId || 'main'
       };
     }
 

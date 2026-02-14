@@ -18,3 +18,5 @@ Thumbs.db
 
 # Local config
 www/config.js
+www/agents-config.js
+android/app/src/main/assets/public/agents-config.js
