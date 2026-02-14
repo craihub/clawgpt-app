@@ -2426,6 +2426,14 @@ window.CLAWGPT_CONFIG = {
           }
         }
       }
+      // Set streaming state if this is a chat.send (so we process the response)
+      if (msg.data.method === 'chat.send') {
+        this.streaming = true;
+        this.streamBuffer = '';
+        this.updateStreamingUI();
+        this.renderMessages();
+        this.lastGatewayChat = this.currentChatId;
+      }
       // Forward to gateway
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify(msg.data));
