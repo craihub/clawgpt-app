@@ -33,7 +33,7 @@ class ClawGPT {
     this.memoryStorage = new MemoryStorage();
 
     // Multi-agent support
-    this.agents = window.CLAWGT_AGENTS || [{ id: 'main', name: 'Main', sessionKey: 'agent:main:clawgt', icon: '', description: 'General assistant' }];
+    this.agents = window.CLAWGT_AGENTS || [{ id: 'main', name: 'Main', sessionKey: 'agent:main:main', icon: '', description: 'General assistant' }];
     this.activeAgentId = localStorage.getItem('clawgt-active-agent') || this.agents[0]?.id || 'main';
     this.agentChats = {}; // Stores chats per agent: { agentId: { chatId: chat } }
     try {
@@ -4545,8 +4545,9 @@ Example: [0, 2, 5]`;
 
     // Reconnect with new session key if connected
     if (this.connected) {
-      // Just update the session key - next message will use it
+      // Fetch history from gateway for this workspace session
       console.log('Switched to agent:', agent.name, 'session:', agent.sessionKey);
+      this.loadHistory();
     }
   }
 
