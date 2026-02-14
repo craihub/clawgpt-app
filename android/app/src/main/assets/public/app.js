@@ -49,6 +49,7 @@ class ClawGPT {
   async init() {
     await this.loadChats();
     this.renderChatList();
+    this.initAgentList();
 
     // Sync existing chats to clawgpt-memory (background)
     this.syncMemoryStorage();
@@ -2654,6 +2655,23 @@ window.CLAWGPT_CONFIG = {
       toast.classList.remove('show');
       setTimeout(() => toast.remove(), 300);
     }, 3000);
+  }
+
+  // Populate agent list in sidebar (display only, no switching)
+  initAgentList() {
+    const agents = window.CLAWGT_AGENTS;
+    if (!agents || agents.length === 0) return;
+
+    const agentList = document.getElementById('agentList');
+    if (!agentList) return;
+
+    agentList.style.display = 'flex';
+    agentList.innerHTML = agents.map(agent =>
+      `<div class="agent-item${agent.id === 'main' ? ' active' : ''}" data-agent-id="${agent.id}">
+        <span class="agent-icon">${agent.icon || ''}</span>
+        <span class="agent-name">${agent.name}</span>
+      </div>`
+    ).join('');
   }
 
   // UI initialization
