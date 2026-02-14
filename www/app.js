@@ -1865,6 +1865,22 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
+    // Handle full state from desktop (phone gets all chats on connect)
+    if (msg.type === 'full-state' && msg.state) {
+      console.log('[Relay] Received full state from desktop:', Object.keys(msg.state.chats || {}).length, 'chats');
+      const desktopChats = msg.state.chats || {};
+      for (const [id, chat] of Object.entries(desktopChats)) {
+        this.chats[id] = chat;
+      }
+      if (msg.state.currentChatId) {
+        this.currentChatId = msg.state.currentChatId;
+      }
+      this.saveChats();
+      this.renderChatList();
+      this.renderMessages();
+      return;
+    }
+
     // Handle auth info from desktop (gateway URL + token)
     if (msg.type === 'auth') {
       console.log('Received gateway auth from desktop');
@@ -2004,7 +2020,8 @@ window.CLAWGPT_CONFIG = {
         title: chat.title,
         createdAt: chat.createdAt,
         updatedAt: chat.updatedAt,
-        messages: chat.messages || []
+        messages: chat.messages || [],
+        agentId: chat.agentId
       };
     }
 
@@ -2158,18 +2175,19 @@ window.CLAWGPT_CONFIG = {
   handleChatUpdate(msg) {
     // Handle streaming delta updates from peer (desktop -> phone streaming)
     if (msg.chatId && msg.streaming && msg.content && !msg.message && !msg.chat) {
-      const chatId = msg.chatId;
-      // Check if we're viewing this chat OR a chat for the same agent
-      const isViewingChat = this.currentChatId === chatId || this._isViewingSameAgent(chatId);
-      if (isViewingChat) {
+      if (this.relayIsGatewayProxy) {
+        // Phone is thin client -- always display streaming from desktop
         this.streaming = true;
         this.streamBuffer = msg.content;
-        // If viewing a different chatId for the same agent, switch to the peer's chat
-        if (this.currentChatId !== chatId && this.chats[chatId]) {
-          this.currentChatId = chatId;
-          this.renderChatList();
-        }
         this.updateStreamingMessage();
+      } else {
+        // Desktop -- only show if viewing same chat/agent
+        const isViewingChat = this.currentChatId === msg.chatId || this._isViewingSameAgent(msg.chatId);
+        if (isViewingChat) {
+          this.streaming = true;
+          this.streamBuffer = msg.content;
+          this.updateStreamingMessage();
+        }
       }
       return;
     }
@@ -2205,9 +2223,21 @@ window.CLAWGPT_CONFIG = {
       this.chats[chatId].updatedAt = Date.now();
       this.saveChats();
       this.renderChatList();
-      if (this.currentChatId === chatId || this._isViewingSameAgent(chatId)) {
+      // On phone (thin client), always switch to and render peer messages
+      // since desktop only sends messages for the active conversation.
+      // On desktop, only render if viewing same chat/agent.
+      if (this.relayIsGatewayProxy) {
+        // Phone side
         if (this.currentChatId !== chatId) {
           this.currentChatId = chatId;
+          this.renderChatList();
+        }
+        this.renderMessages();
+      } else if (this.currentChatId === chatId || this._isViewingSameAgent(chatId)) {
+        // Desktop side
+        if (this.currentChatId !== chatId) {
+          this.currentChatId = chatId;
+          this.renderChatList();
         }
         this.renderMessages();
       }
