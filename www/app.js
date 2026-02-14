@@ -2347,22 +2347,31 @@ window.CLAWGPT_CONFIG = {
 
   // Handle message from phone - create chat if needed and forward to gateway
   handlePhoneMessage(msg) {
-    const { chatId, content, attachments, agentId } = msg;
+    const { content, attachments, agentId } = msg;
 
     // If phone specifies an agent, switch to it on desktop too
     if (agentId && agentId !== this.activeAgentId) {
       this.switchAgent(agentId);
     }
 
-    // Create chat if it doesn't exist (chat-update may have already created it)
-    if (!this.chats[chatId]) {
+    // Find existing chat for this agent instead of creating a new one
+    const targetAgentId = this.activeAgentId;
+    const existingChat = Object.values(this.chats)
+      .filter(c => c.agentId === targetAgentId || (!c.agentId && targetAgentId === 'main'))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+
+    let chatId;
+    if (existingChat) {
+      chatId = existingChat.id;
+    } else {
+      chatId = this.generateId();
       this.chats[chatId] = {
         id: chatId,
         title: (content || 'Image').substring(0, 30) + ((content || '').length > 30 ? '...' : ''),
         createdAt: Date.now(),
         updatedAt: Date.now(),
         messages: [],
-        agentId: this.activeAgentId
+        agentId: targetAgentId
       };
     }
 
