@@ -2376,8 +2376,22 @@ window.CLAWGPT_CONFIG = {
     }
     if (msg.type === 'chat-update') {
       // When phone sends a user message, route to existing desktop chat
-      // instead of creating a duplicate with the phone's chatId
+      // instead of creating a duplicate with the phone's chatId.
+      // Use the phone chat's agentId if available, fall back to desktop's active agent.
       if (msg.chatId && msg.message && msg.message.role === 'user' && !msg.chat) {
+        // Try to determine which agent this message belongs to
+        const phoneChat = this.chats[msg.chatId];
+        const phoneAgentId = msg.agentId || phoneChat?.agentId || this.activeAgentId;
+
+        // Switch desktop to phone's agent if different
+        if (phoneAgentId !== this.activeAgentId) {
+          const matchingAgent = this.agents.find(a => a.id === phoneAgentId);
+          if (matchingAgent) {
+            console.log('[Relay] Phone on different agent, switching to:', phoneAgentId);
+            this.switchAgent(phoneAgentId);
+          }
+        }
+
         const targetAgentId = this.activeAgentId;
         const existingChat = Object.values(this.chats)
           .filter(c => c.agentId === targetAgentId || (!c.agentId && targetAgentId === 'main'))
@@ -2400,6 +2414,18 @@ window.CLAWGPT_CONFIG = {
 
     // Handle gateway request from phone (desktop proxies to gateway)
     if (msg.type === 'gateway-request' && msg.data) {
+      // If phone is sending to a different agent's session, switch desktop to match
+      // so we process the response events (they come back with the phone's sessionKey)
+      if (msg.data.params?.sessionKey) {
+        const phoneSession = msg.data.params.sessionKey;
+        if (phoneSession !== this.sessionKey) {
+          const matchingAgent = this.agents.find(a => a.sessionKey === phoneSession);
+          if (matchingAgent && matchingAgent.id !== this.activeAgentId) {
+            console.log('[Relay] Phone using different agent, switching desktop to:', matchingAgent.id);
+            this.switchAgent(matchingAgent.id);
+          }
+        }
+      }
       // Forward to gateway
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify(msg.data));
@@ -6424,7 +6450,8 @@ Example: [0, 2, 5]`;
         type: 'chat-update',
         chatId: this.currentChatId,
         message: userMsg,
-        chatTitle: this.chats[this.currentChatId].title
+        chatTitle: this.chats[this.currentChatId].title,
+        agentId: this.activeAgentId
       });
     }
 
