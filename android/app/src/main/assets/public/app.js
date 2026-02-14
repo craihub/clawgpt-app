@@ -2345,47 +2345,13 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     if (msg.type === 'chat-update') {
-      // Track chatId for the upcoming chat.send intercept, but don't create
-      // a new chat -- handlePhoneMessage will route to the correct existing chat
-      if (msg.chatId && msg.message?.role === 'user') {
-        this._lastPhoneChatId = msg.chatId;
-        console.log('[Sync] Tracked phone chatId for intercept:', msg.chatId);
-      } else if (msg.message?.role === 'assistant') {
-        // Assistant responses from phone can be ignored -- desktop handles streaming
-        console.log('[Sync] Ignoring phone assistant chat-update (desktop handles response)');
-      } else {
-        // Other chat-updates (full chat sync etc) -- handle normally
-        this.handleChatUpdate(msg);
-      }
+      this.handleChatUpdate(msg);
       return;
     }
 
     // Handle gateway request from phone (desktop proxies to gateway)
     if (msg.type === 'gateway-request' && msg.data) {
-      // Intercept chat.send - route through handlePhoneMessage so desktop
-      // manages streaming state, chat creation, and response forwarding
-      if (msg.data.method === 'chat.send' && msg.data.params?.message) {
-        console.log('[Relay] Intercepting chat.send from phone, routing through handlePhoneMessage');
-
-        // Use the phone's chatId if we got a chat-update just before this
-        // (phone sends chat-update with user msg, then chat.send for gateway)
-        const chatId = this._lastPhoneChatId || msg.data.params.idempotencyKey || ('phone-' + Date.now());
-        this._lastPhoneChatId = null;
-
-        // Send ack back to phone so its request() promise resolves
-        this.sendRelayMessage({
-          type: 'gateway-response',
-          data: { type: 'res', id: msg.data.id, ok: true, payload: { type: 'chat.send-ok' } }
-        });
-
-        this.handlePhoneMessage({
-          chatId: chatId,
-          content: msg.data.params.message,
-          agentId: msg.data.params.sessionKey ? this.agents.find(a => a.sessionKey === msg.data.params.sessionKey)?.id : undefined
-        });
-        return;
-      }
-      // Forward other requests to gateway
+      // Forward to gateway
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify(msg.data));
       }
@@ -6542,17 +6508,8 @@ Example: [0, 2, 5]`;
     if (payload.sessionKey &&
         payload.sessionKey !== this.sessionKey &&
         !payload.sessionKey.endsWith(':' + this.sessionKey)) {
-      // Forward to relay client if connected (phone may use a different session key)
-      if (this.relayEncrypted && payload.sessionKey !== '__clawgpt_summarizer') {
-        console.log('Forwarding event to relay client:', payload.sessionKey);
-        this.sendRelayMessage({
-          type: 'gateway-response',
-          data: { type: 'event', event: 'chat', payload }
-        });
-      } else {
-        console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
-      }
-      return; // Different session - don't process locally
+      console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
+      return; // Different session
     }
 
     if (state === 'delta' && content) {
