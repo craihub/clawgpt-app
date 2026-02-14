@@ -1440,6 +1440,16 @@ window.CLAWGPT_CONFIG = {
                   publicKey: this.relayCrypto.getPublicKey()
                 }));
               }
+              // Auto-close fullscreen QR overlay
+              if (this._qrFullscreenOverlay) {
+                this._qrFullscreenOverlay.remove();
+                this._qrFullscreenOverlay = null;
+              }
+              // Auto-close setup modal
+              const setupModal = document.getElementById('setupModal');
+              if (setupModal && setupModal.style.display !== 'none') {
+                setupModal.style.display = 'none';
+              }
             } else if (msg.event === 'host.connected') {
               console.log('Host reconnected');
             } else if (msg.event === 'client.disconnected') {
@@ -2560,9 +2570,44 @@ window.CLAWGPT_CONFIG = {
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M
       });
+
+      // Make QR code clickable for fullscreen view
+      qrContainer.style.cursor = 'pointer';
+      qrContainer.title = 'Click to enlarge';
+      qrContainer.onclick = () => this.showFullscreenQR(data);
     } else {
       qrContainer.innerHTML = '<p style="color: var(--text-muted);">QR library not loaded</p>';
     }
+  }
+
+  showFullscreenQR(data) {
+    // Create fullscreen overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'qr-fullscreen-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:white;z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer;';
+    overlay.onclick = () => overlay.remove();
+
+    const qrBox = document.createElement('div');
+    qrBox.style.cssText = 'display:flex;align-items:center;justify-content:center;';
+
+    if (typeof QRCode !== 'undefined') {
+      // Size QR to 80% of the smaller viewport dimension
+      const size = Math.min(window.innerWidth, window.innerHeight) * 0.8;
+      new QRCode(qrBox, {
+        text: data,
+        width: size,
+        height: size,
+        colorDark: '#000000',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    }
+
+    overlay.appendChild(qrBox);
+    document.body.appendChild(overlay);
+
+    // Store reference so we can close it when phone connects
+    this._qrFullscreenOverlay = overlay;
   }
 
   showToast(message, isError = false) {
