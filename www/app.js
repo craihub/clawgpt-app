@@ -2303,7 +2303,18 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     if (msg.type === 'chat-update') {
-      this.handleChatUpdate(msg);
+      // Track chatId for the upcoming chat.send intercept, but don't create
+      // a new chat -- handlePhoneMessage will route to the correct existing chat
+      if (msg.chatId && msg.message?.role === 'user') {
+        this._lastPhoneChatId = msg.chatId;
+        console.log('[Sync] Tracked phone chatId for intercept:', msg.chatId);
+      } else if (msg.message?.role === 'assistant') {
+        // Assistant responses from phone can be ignored -- desktop handles streaming
+        console.log('[Sync] Ignoring phone assistant chat-update (desktop handles response)');
+      } else {
+        // Other chat-updates (full chat sync etc) -- handle normally
+        this.handleChatUpdate(msg);
+      }
       return;
     }
 
@@ -4387,10 +4398,19 @@ Example: [0, 2, 5]`;
       delete this.chats[chatId];
       this.saveChats();
       if (this.currentChatId === chatId) {
-        this.newChat();
-      } else {
-        this.renderChatList();
+        // Find another chat for this agent, or show welcome screen
+        const otherChat = Object.values(this.chats)
+          .filter(c => c.agentId === this.activeAgentId || (!c.agentId && this.activeAgentId === 'main'))
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+        if (otherChat) {
+          this.currentChatId = otherChat.id;
+        } else {
+          this.currentChatId = null;
+          this.elements.welcome.style.display = 'flex';
+        }
+        this.renderMessages();
       }
+      this.renderChatList();
     }
   }
 
