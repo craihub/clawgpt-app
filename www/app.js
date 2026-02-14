@@ -1829,6 +1829,15 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
+    // Desktop switched agent - switch locally too (don't relay back)
+    if (msg.type === 'switch-agent' && msg.agentId) {
+      console.log('[Relay] Desktop switched to agent:', msg.agentId);
+      this._suppressRelaySwitch = true;
+      this.switchAgent(msg.agentId);
+      this._suppressRelaySwitch = false;
+      return;
+    }
+
     // Handle message status updates
     if (msg.type === 'message-status') {
       console.log('[Relay] Received message status:', msg.status);
@@ -1996,7 +2005,14 @@ window.CLAWGPT_CONFIG = {
     this.chats = state.chats;
     this.currentChatId = state.currentChatId;
 
-    console.log(`[Relay] Loaded ${Object.keys(this.chats).length} chats from desktop`);
+    // Load agents from desktop if provided
+    if (state.agents && state.agents.length > 0) {
+      window.CLAWGT_AGENTS = state.agents;
+      this.activeAgentId = state.activeAgentId || 'main';
+      this.initAgentList();
+    }
+
+    console.log(`[Relay] Loaded ${Object.keys(this.chats).length} chats, ${state.agents?.length || 0} agents from desktop`);
 
     // Update UI
     this.renderChatList();
@@ -2146,7 +2162,9 @@ window.CLAWGPT_CONFIG = {
     // Send all chats with messages - phone will just display them
     const state = {
       chats: {},
-      currentChatId: this.currentChatId
+      currentChatId: this.currentChatId,
+      agents: this.agents || window.CLAWGT_AGENTS || [],
+      activeAgentId: this.activeAgentId || 'main'
     };
 
     for (const [id, chat] of Object.entries(this.chats)) {
@@ -2155,7 +2173,8 @@ window.CLAWGPT_CONFIG = {
         title: chat.title,
         createdAt: chat.createdAt,
         updatedAt: chat.updatedAt,
-        messages: chat.messages || []
+        messages: chat.messages || [],
+        agentId: chat.agentId || 'main'
       };
     }
 
@@ -2164,7 +2183,7 @@ window.CLAWGPT_CONFIG = {
       state: state
     });
 
-    console.log(`[Relay] Sent full state: ${Object.keys(state.chats).length} chats`);
+    console.log(`[Relay] Sent full state: ${Object.keys(state.chats).length} chats, ${state.agents.length} agents`);
   }
 
   // Legacy sync - in thin client mode, request state from desktop
@@ -2516,6 +2535,15 @@ window.CLAWGPT_CONFIG = {
       return;
     }
 
+    // Phone switched agent - switch locally too (don't relay back)
+    if (msg.type === 'switch-agent' && msg.agentId) {
+      console.log('[Relay] Phone switched to agent:', msg.agentId);
+      this._suppressRelaySwitch = true;
+      this.switchAgent(msg.agentId);
+      this._suppressRelaySwitch = false;
+      return;
+    }
+
     // Legacy sync messages - respond with full state instead
     if (msg.type === 'sync-meta' || msg.type === 'sync-request') {
       console.log('[Relay] Legacy sync request, sending full state');
@@ -2726,6 +2754,14 @@ window.CLAWGPT_CONFIG = {
     // Reconnect gateway with new session key
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.sendConnect();
+    }
+
+    // Tell the other device (phone<->desktop) to switch too
+    if (this.relayEncrypted && !this._suppressRelaySwitch) {
+      this.sendRelayMessage({
+        type: 'switch-agent',
+        agentId: agentId
+      });
     }
 
     console.log('Switched to agent:', agent.name, 'session:', agent.sessionKey);
