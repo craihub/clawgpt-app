@@ -4498,10 +4498,19 @@ Example: [0, 2, 5]`;
     this.sessionKey = agent.sessionKey;
     localStorage.setItem('clawgt-active-agent', agentId);
 
-    // Clear current chat
-    this.currentChatId = null;
+    // Find existing chat for this agent, or show welcome
     this.lastGatewayChat = null;
-    this.elements.welcome.style.display = 'flex';
+    const existingAgentChat = Object.values(this.chats)
+      .filter(c => c.agentId === agentId || (!c.agentId && agentId === 'main'))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+
+    if (existingAgentChat) {
+      this.currentChatId = existingAgentChat.id;
+      this.elements.welcome.style.display = 'none';
+    } else {
+      this.currentChatId = null;
+      this.elements.welcome.style.display = 'flex';
+    }
     this.renderMessages();
     this.renderChatList();
     this.updateTokenDisplay();
