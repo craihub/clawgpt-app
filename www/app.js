@@ -2345,6 +2345,25 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     if (msg.type === 'chat-update') {
+      // When phone sends a user message, route to existing desktop chat
+      // instead of creating a duplicate with the phone's chatId
+      if (msg.chatId && msg.message && msg.message.role === 'user' && !msg.chat) {
+        const targetAgentId = this.activeAgentId;
+        const existingChat = Object.values(this.chats)
+          .filter(c => c.agentId === targetAgentId || (!c.agentId && targetAgentId === 'main'))
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+
+        if (existingChat) {
+          existingChat.messages.push(msg.message);
+          existingChat.updatedAt = Date.now();
+          this.currentChatId = existingChat.id;
+          this.saveChats();
+          this.renderChatList();
+          this.renderMessages();
+          console.log('[Sync] Routed phone user message to existing chat:', existingChat.title);
+          return;
+        }
+      }
       this.handleChatUpdate(msg);
       return;
     }
