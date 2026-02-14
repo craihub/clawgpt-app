@@ -4627,8 +4627,13 @@ Example: [0, 2, 5]`;
       html += '</div>';
     }
 
+    // If there's only one chat for the active agent, don't show it in the list
+    // The workspace item itself IS the chat entry
+    const totalAgentChats = allChats.length;
+    const hideChats = totalAgentChats <= 1 && this.agents.length > 1;
+
     // Render pinned section
-    if (pinnedChats.length > 0) {
+    if (pinnedChats.length > 0 && !hideChats) {
       const visiblePinned = pinnedChats.slice(0, 5);
       const hiddenPinned = pinnedChats.slice(5);
       const isExpanded = this.pinnedExpanded;
@@ -4658,7 +4663,7 @@ Example: [0, 2, 5]`;
     }
 
     // Render unpinned section
-    if (unpinnedChats.length > 0) {
+    if (unpinnedChats.length > 0 && !hideChats) {
       if (pinnedChats.length > 0) {
         html += '<div class="section-header">Recent</div>';
       }
