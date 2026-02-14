@@ -145,6 +145,13 @@ body {
 }
 
 /* Agent/Workspace list */
+.setup-or-divider {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 8px 0;
+}
+
 .agent-section {
   border-bottom: 1px solid var(--border-color);
   margin-bottom: 8px;

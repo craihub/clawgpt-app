@@ -866,7 +866,38 @@ window.CLAWGPT_CONFIG = {
       total += this.estimateTokens(this.streamBuffer);
     }
 
-    chatTokensEl.textContent = `~${this.formatTokenCount(total)} tokens`;
+    // Use real gateway token count if available, otherwise estimate from local messages
+    const gatewayTokens = this._gatewayContextTokens;
+    const contextLimit = this._gatewayContextWindow || 200000;
+    const usedTokens = gatewayTokens || total;
+    const remaining = Math.max(0, contextLimit - usedTokens);
+    const pct = Math.round((remaining / contextLimit) * 100);
+
+    // Compaction warning at thresholds (only fire once per threshold)
+    if (!this._compactionWarned) this._compactionWarned = {};
+    if (pct <= 10 && !this._compactionWarned[10]) {
+      this._compactionWarned[10] = true;
+      this.showToast('Compaction imminent (~10% context remaining). Request a fingerprint now.', true);
+    } else if (pct <= 20 && !this._compactionWarned[20]) {
+      this._compactionWarned[20] = true;
+      this.showToast('Context running low (~20% remaining). Consider a fingerprint soon.');
+    }
+
+    // Color-code: green > 50%, yellow 20-50%, orange 10-20%, red < 10%
+    let color = '';
+    if (pct <= 10) color = 'var(--error, #e74c3c)';
+    else if (pct <= 20) color = '#e67e22';
+    else if (pct <= 50) color = '#f39c12';
+
+    const prefix = gatewayTokens ? '' : '~';
+    chatTokensEl.textContent = `${prefix}${this.formatTokenCount(remaining)} remaining`;
+    if (color) {
+      chatTokensEl.style.color = color;
+      chatTokensEl.title = `${pct}% context remaining (${this.formatTokenCount(usedTokens)}/${this.formatTokenCount(contextLimit)}). Consider taking a fingerprint before compaction.`;
+    } else {
+      chatTokensEl.style.color = '';
+      chatTokensEl.title = `${this.formatTokenCount(usedTokens)} / ${this.formatTokenCount(contextLimit)} tokens used${gatewayTokens ? ' (live)' : ' (estimate)'}`;
+    }
     chatTokensEl.style.display = 'block';
   }
 
@@ -1351,9 +1382,17 @@ window.CLAWGPT_CONFIG = {
 
   connectToRelayRoom(relayUrl, roomId) {
     return new Promise((resolve, reject) => {
-      // Close existing relay connection
+      // Cancel any pending auto-reconnect
+      if (this._relayReconnectTimer) {
+        clearTimeout(this._relayReconnectTimer);
+        this._relayReconnectTimer = null;
+      }
+
+      // Close existing relay connection (mark intentional to skip auto-reconnect)
       if (this.relayWs) {
+        this._relayIntentionalClose = true;
         this.relayWs.close();
+        this._relayIntentionalClose = false;
       }
 
       // Reset encryption state
@@ -1451,13 +1490,14 @@ window.CLAWGPT_CONFIG = {
 
       this.relayWs.onclose = () => {
         console.log('Relay connection closed');
+        const wasIntentional = this._relayIntentionalClose;
         this.relayWs = null;
         this.relayEncrypted = false;
         // Don't destroy relayCrypto - may be reused for reconnection
 
-        // Auto-reconnect as host with exponential backoff
+        // Auto-reconnect as host with exponential backoff (skip if intentionally closed)
         const saved = this.getSavedRelayConnection();
-        if (saved && this.relayRole === 'host') {
+        if (saved && this.relayRole === 'host' && !wasIntentional) {
           const delay = Math.min(3000 * Math.pow(2, (this._relayReconnectAttempts || 0)), 60000);
           this._relayReconnectAttempts = (this._relayReconnectAttempts || 0) + 1;
           console.log(`Relay auto-reconnect in ${delay/1000}s (attempt ${this._relayReconnectAttempts})`);
@@ -1628,7 +1668,7 @@ window.CLAWGPT_CONFIG = {
 
   // Join relay as client (phone side - scanned QR code)
   async joinRelayAsClient({ server, channel, pubkey }) {
-    console.log('Joining relay as client:', { server, channel });
+    console.log('Joining relay as client:', { server, channel, pubkeyLen: pubkey?.length });
 
     this.setStatus('Connecting to relay...');
 
@@ -1875,7 +1915,8 @@ window.CLAWGPT_CONFIG = {
   // Send message to gateway via relay (phone side)
   sendViaRelay(gatewayMsg) {
     if (!this.relayEncrypted || !this.relayWs) {
-      console.error('Relay not connected');
+      console.error('Relay not connected', { encrypted: this.relayEncrypted, wsExists: !!this.relayWs, wsState: this.relayWs?.readyState, method: gatewayMsg?.method });
+      window._clawgptErrors.push('sendViaRelay failed: encrypted=' + this.relayEncrypted + ' ws=' + !!this.relayWs + ' state=' + this.relayWs?.readyState + ' method=' + gatewayMsg?.method);
       return;
     }
 
@@ -2115,9 +2156,41 @@ window.CLAWGPT_CONFIG = {
   }
 
   handleChatUpdate(msg) {
+    // Handle streaming delta updates from peer (desktop -> phone streaming)
+    if (msg.chatId && msg.streaming && msg.content && !msg.message && !msg.chat) {
+      const chatId = msg.chatId;
+      // Check if we're viewing this chat OR a chat for the same agent
+      const isViewingChat = this.currentChatId === chatId || this._isViewingSameAgent(chatId);
+      if (isViewingChat) {
+        this.streaming = true;
+        this.streamBuffer = msg.content;
+        // If viewing a different chatId for the same agent, switch to the peer's chat
+        if (this.currentChatId !== chatId && this.chats[chatId]) {
+          this.currentChatId = chatId;
+          this.renderChatList();
+        }
+        this.updateStreamingMessage();
+      }
+      return;
+    }
+
     // Handle incremental message updates (single message added)
     if (msg.chatId && msg.message && !msg.chat) {
       const chatId = msg.chatId;
+
+      // Track phone's chatId for user messages (used by chat.send intercept)
+      if (msg.message.role === 'user') {
+        this._lastPhoneChatId = chatId;
+      }
+
+      // Clear streaming state when receiving assistant message via relay
+      // (phone set streaming=true when it sent the message, desktop handled it)
+      if (msg.message.role === 'assistant' && this.streaming && !msg.streaming) {
+        this.streaming = false;
+        this.streamBuffer = '';
+        this.updateStreamingUI();
+      }
+
       if (!this.chats[chatId]) {
         // Create chat if it doesn't exist yet
         this.chats[chatId] = {
@@ -2132,7 +2205,10 @@ window.CLAWGPT_CONFIG = {
       this.chats[chatId].updatedAt = Date.now();
       this.saveChats();
       this.renderChatList();
-      if (this.currentChatId === chatId) {
+      if (this.currentChatId === chatId || this._isViewingSameAgent(chatId)) {
+        if (this.currentChatId !== chatId) {
+          this.currentChatId = chatId;
+        }
         this.renderMessages();
       }
       console.log(`[Sync] Incremental update for chat: ${this.chats[chatId].title}`);
@@ -2178,12 +2254,33 @@ window.CLAWGPT_CONFIG = {
         });
       }
 
-      if (this.currentChatId === chat.id) {
+      // Render if viewing this chat OR a chat for the same agent
+      if (this.currentChatId === chat.id || this._isViewingSameAgent(chat.id)) {
+        // Clear streaming state since we got the final chat
+        if (this.streaming) {
+          this.streaming = false;
+          this.streamBuffer = '';
+          this.updateStreamingUI();
+        }
+        if (this.currentChatId !== chat.id) {
+          this.currentChatId = chat.id;
+          this.renderChatList();
+        }
         this.renderMessages();
       }
 
       console.log(`[Sync] Real-time update for chat: ${chat.title || chat.id}`);
     }
+  }
+
+  // Check if the current view is showing the same agent as the given chatId
+  _isViewingSameAgent(chatId) {
+    const theirChat = this.chats[chatId];
+    const ourChat = this.chats[this.currentChatId];
+    if (!theirChat) return false;
+    const theirAgent = theirChat.agentId || 'main';
+    const ourAgent = ourChat ? (ourChat.agentId || 'main') : this.activeAgentId;
+    return theirAgent === ourAgent;
   }
 
   // Broadcast chat update to connected peer
@@ -2202,6 +2299,16 @@ window.CLAWGPT_CONFIG = {
 
   handleRelayMessage(msg) {
     // SIMPLIFIED PROTOCOL
+
+    // Ignore gateway-response from phone (phone shouldn't send these to host)
+    if (msg.type === 'gateway-response') {
+      return;
+    }
+
+    // Ignore full-state from phone (host is the source of truth)
+    if (msg.type === 'full-state') {
+      return;
+    }
 
     // Phone requests full state (on connect or reconnect)
     if (msg.type === 'request-state') {
@@ -2238,13 +2345,47 @@ window.CLAWGPT_CONFIG = {
       return;
     }
     if (msg.type === 'chat-update') {
-      this.handleChatUpdate(msg);
+      // Track chatId for the upcoming chat.send intercept, but don't create
+      // a new chat -- handlePhoneMessage will route to the correct existing chat
+      if (msg.chatId && msg.message?.role === 'user') {
+        this._lastPhoneChatId = msg.chatId;
+        console.log('[Sync] Tracked phone chatId for intercept:', msg.chatId);
+      } else if (msg.message?.role === 'assistant') {
+        // Assistant responses from phone can be ignored -- desktop handles streaming
+        console.log('[Sync] Ignoring phone assistant chat-update (desktop handles response)');
+      } else {
+        // Other chat-updates (full chat sync etc) -- handle normally
+        this.handleChatUpdate(msg);
+      }
       return;
     }
 
     // Handle gateway request from phone (desktop proxies to gateway)
     if (msg.type === 'gateway-request' && msg.data) {
-      // Forward to gateway
+      // Intercept chat.send - route through handlePhoneMessage so desktop
+      // manages streaming state, chat creation, and response forwarding
+      if (msg.data.method === 'chat.send' && msg.data.params?.message) {
+        console.log('[Relay] Intercepting chat.send from phone, routing through handlePhoneMessage');
+
+        // Use the phone's chatId if we got a chat-update just before this
+        // (phone sends chat-update with user msg, then chat.send for gateway)
+        const chatId = this._lastPhoneChatId || msg.data.params.idempotencyKey || ('phone-' + Date.now());
+        this._lastPhoneChatId = null;
+
+        // Send ack back to phone so its request() promise resolves
+        this.sendRelayMessage({
+          type: 'gateway-response',
+          data: { type: 'res', id: msg.data.id, ok: true, payload: { type: 'chat.send-ok' } }
+        });
+
+        this.handlePhoneMessage({
+          chatId: chatId,
+          content: msg.data.params.message,
+          agentId: msg.data.params.sessionKey ? this.agents.find(a => a.sessionKey === msg.data.params.sessionKey)?.id : undefined
+        });
+        return;
+      }
+      // Forward other requests to gateway
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify(msg.data));
       }
@@ -2259,16 +2400,31 @@ window.CLAWGPT_CONFIG = {
 
   // Handle message from phone - create chat if needed and forward to gateway
   handlePhoneMessage(msg) {
-    const { chatId, content, attachments } = msg;
+    const { content, attachments, agentId } = msg;
 
-    // Create chat if it doesn't exist
-    if (!this.chats[chatId]) {
+    // If phone specifies an agent, switch to it on desktop too
+    if (agentId && agentId !== this.activeAgentId) {
+      this.switchAgent(agentId);
+    }
+
+    // Find existing chat for this agent instead of creating a new one
+    const targetAgentId = this.activeAgentId;
+    const existingChat = Object.values(this.chats)
+      .filter(c => c.agentId === targetAgentId || (!c.agentId && targetAgentId === 'main'))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+
+    let chatId;
+    if (existingChat) {
+      chatId = existingChat.id;
+    } else {
+      chatId = this.generateId();
       this.chats[chatId] = {
         id: chatId,
         title: (content || 'Image').substring(0, 30) + ((content || '').length > 30 ? '...' : ''),
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        messages: []
+        messages: [],
+        agentId: targetAgentId
       };
     }
 
@@ -2358,17 +2514,36 @@ window.CLAWGPT_CONFIG = {
         });
       }
 
-      // Call original sendMessage (this adds user message and starts streaming)
-      // If we have attachments from phone, temporarily set them as pending
-      if (attachments && attachments.length > 0) {
-        // Convert relay attachments to pendingImages format
-        this.pendingImages = attachments.map(att => ({
-          base64: `data:${att.mimeType};base64,${att.content}`,
-          mimeType: att.mimeType,
-          name: 'image'
-        }));
+      // Send directly to gateway (don't use sendMessage which adds user msg to chat again)
+      // The phone's chat-update already added the user message to this.chats
+      this.currentChatId = chatId;
+      this.streaming = true;
+      this.streamBuffer = '';
+      this.updateStreamingUI();
+      this.renderMessages();
+      this.lastGatewayChat = chatId;
+
+      try {
+        const params = {
+          sessionKey: this.sessionKey,
+          message: content,
+          deliver: false,
+          idempotencyKey: this.generateId()
+        };
+        if (attachments && attachments.length > 0) {
+          params.attachments = attachments.map(att => ({
+            data: att.content,
+            mimeType: att.mimeType
+          }));
+        }
+        console.log('Sending phone message to gateway:', JSON.stringify(params).substring(0, 200));
+        await this.request('chat.send', params);
+      } catch (sendError) {
+        console.error('Gateway send failed:', sendError);
+        this.streaming = false;
+        this.updateStreamingUI();
+        this.addAssistantMessage('Error: ' + sendError.message);
       }
-      this.sendMessage(content);
 
     } catch (error) {
       console.error('Phone message send failed:', error);
@@ -2601,6 +2776,68 @@ window.CLAWGPT_CONFIG = {
       });
     }
 
+    // Settings screen Copy Logs button
+    const settingsCopyLogsBtn = document.getElementById('settingsCopyLogsBtn');
+    if (settingsCopyLogsBtn) {
+      settingsCopyLogsBtn.addEventListener('click', () => {
+        const fullLog = [
+          '=== ClawGT Debug Log (Settings) ===',
+          'Time: ' + new Date().toISOString(),
+          'UserAgent: ' + navigator.userAgent,
+          'Platform: ' + (navigator.platform || 'unknown'),
+          'URL: ' + window.location.href,
+          'Connected: ' + this.connected,
+          'RelayEncrypted: ' + this.relayEncrypted,
+          'RelayIsProxy: ' + this.relayIsGatewayProxy,
+          'RelayWS: ' + (this.relayWs ? 'state=' + this.relayWs.readyState : 'null'),
+          'GatewayWS: ' + (this.ws ? 'state=' + this.ws.readyState : 'null'),
+          'SessionKey: ' + this.sessionKey,
+          'ActiveAgent: ' + this.activeAgentId,
+          'isMobile: ' + this.isMobile,
+          '',
+          '=== Errors ===',
+          ...(window._clawgptErrors || ['(none)']),
+          '',
+          '=== Recent Logs ===',
+          ...(window._clawgptLogs || ['(none)']).slice(-100)
+        ].join('\n');
+
+        navigator.clipboard.writeText(fullLog).then(() => {
+          settingsCopyLogsBtn.textContent = 'Copied!';
+          setTimeout(() => settingsCopyLogsBtn.textContent = 'Copy Logs', 2000);
+        }).catch(() => {
+          const ta = document.createElement('textarea');
+          ta.value = fullLog;
+          ta.style.position = 'fixed';
+          ta.style.left = '-9999px';
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+          settingsCopyLogsBtn.textContent = 'Copied!';
+          setTimeout(() => settingsCopyLogsBtn.textContent = 'Copy Logs', 2000);
+        });
+      });
+    }
+
+    // Settings Reset Relay button
+    const settingsResetRelayBtn = document.getElementById('settingsResetRelayBtn');
+    if (settingsResetRelayBtn) {
+      settingsResetRelayBtn.addEventListener('click', () => {
+        if (confirm('Reset relay connection? You will need to scan QR again.')) {
+          localStorage.removeItem('clawgpt-relay');
+          localStorage.removeItem('clawgpt-relay-server');
+          localStorage.removeItem('clawgpt-relay-room');
+          localStorage.removeItem('clawgpt-pairing-id');
+          if (this._relayReconnectTimer) { clearTimeout(this._relayReconnectTimer); this._relayReconnectTimer = null; }
+          if (this.relayWs) { this._relayIntentionalClose = true; this.relayWs.close(); this.relayWs = null; }
+          this.relayEncrypted = false;
+          this.relayIsGatewayProxy = false;
+          this.showToast('Relay reset. Scan QR to reconnect.');
+        }
+      });
+    }
+
     // Clear logs button
     const clearLogsBtn = document.getElementById('clearLogsBtn');
     if (clearLogsBtn) {
@@ -2668,6 +2905,19 @@ window.CLAWGPT_CONFIG = {
     const setupSaveBtn = document.getElementById('setupSaveBtn');
     if (setupSaveBtn) {
       setupSaveBtn.addEventListener('click', () => this.connectFromSetup());
+    }
+
+    // Setup screen Scan QR button (mobile first-run only)
+    const setupScanQrBtn = document.getElementById('setupScanQrBtn');
+    const setupScanOrDivider = document.getElementById('setupScanOrDivider');
+    if (setupScanQrBtn) {
+      if (this.isMobile) {
+        setupScanQrBtn.addEventListener('click', () => this.scanQRCode());
+      } else {
+        // Hide scan button on desktop - no camera to scan with
+        setupScanQrBtn.style.display = 'none';
+        if (setupScanOrDivider) setupScanOrDivider.style.display = 'none';
+      }
     }
 
     // Setup screen Copy Logs button
@@ -3853,6 +4103,9 @@ Example: [0, 2, 5]`;
         } else {
           pending.reject(new Error(msg.error?.message || 'Request failed'));
         }
+      } else if (this.relayEncrypted) {
+        // Response not for us - forward to phone (it may have sent a gateway-request)
+        this.sendRelayMessage({ type: 'gateway-response', data: msg });
       }
 
       // Handle hello-ok
@@ -4187,10 +4440,19 @@ Example: [0, 2, 5]`;
       delete this.chats[chatId];
       this.saveChats();
       if (this.currentChatId === chatId) {
-        this.newChat();
-      } else {
-        this.renderChatList();
+        // Find another chat for this agent, or show welcome screen
+        const otherChat = Object.values(this.chats)
+          .filter(c => c.agentId === this.activeAgentId || (!c.agentId && this.activeAgentId === 'main'))
+          .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+        if (otherChat) {
+          this.currentChatId = otherChat.id;
+        } else {
+          this.currentChatId = null;
+          this.elements.welcome.style.display = 'flex';
+        }
+        this.renderMessages();
       }
+      this.renderChatList();
     }
   }
 
@@ -4298,10 +4560,19 @@ Example: [0, 2, 5]`;
     this.sessionKey = agent.sessionKey;
     localStorage.setItem('clawgt-active-agent', agentId);
 
-    // Clear current chat
-    this.currentChatId = null;
+    // Find existing chat for this agent, or show welcome
     this.lastGatewayChat = null;
-    this.elements.welcome.style.display = 'flex';
+    const existingAgentChat = Object.values(this.chats)
+      .filter(c => c.agentId === agentId || (!c.agentId && agentId === 'main'))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+
+    if (existingAgentChat) {
+      this.currentChatId = existingAgentChat.id;
+      this.elements.welcome.style.display = 'none';
+    } else {
+      this.currentChatId = null;
+      this.elements.welcome.style.display = 'flex';
+    }
     this.renderMessages();
     this.renderChatList();
     this.updateTokenDisplay();
@@ -4398,8 +4669,13 @@ Example: [0, 2, 5]`;
       html += '</div>';
     }
 
+    // If there's only one chat for the active agent, don't show it in the list
+    // The workspace item itself IS the chat entry
+    const totalAgentChats = allChats.length;
+    const hideChats = totalAgentChats <= 1 && this.agents.length > 1;
+
     // Render pinned section
-    if (pinnedChats.length > 0) {
+    if (pinnedChats.length > 0 && !hideChats) {
       const visiblePinned = pinnedChats.slice(0, 5);
       const hiddenPinned = pinnedChats.slice(5);
       const isExpanded = this.pinnedExpanded;
@@ -4429,7 +4705,7 @@ Example: [0, 2, 5]`;
     }
 
     // Render unpinned section
-    if (unpinnedChats.length > 0) {
+    if (unpinnedChats.length > 0 && !hideChats) {
       if (pinnedChats.length > 0) {
         html += '<div class="section-header">Recent</div>';
       }
@@ -5018,12 +5294,45 @@ Example: [0, 2, 5]`;
         this.currentModelFamily = this.detectModelFamily(this.currentModelId);
         console.log('Current model:', this.currentModelId, 'Family:', this.currentModelFamily);
       }
+      // Capture gateway token counts for accurate compaction countdown
+      this.updateGatewayTokens(status);
 
       // Don't auto-switch models - use whatever the gateway/session has configured
       // User can switch via model selector if needed
     } catch (error) {
       console.error('Failed to fetch models:', error);
       this.allModels = [];
+    }
+  }
+
+  updateGatewayTokens(status) {
+    if (!status) return;
+    // Extract token info from gateway status
+    const session = status?.session || status?.sessions?.current;
+    if (session?.contextTokens !== undefined) {
+      this._gatewayContextTokens = session.contextTokens;
+      console.log('Gateway context tokens:', session.contextTokens);
+    }
+    if (session?.contextWindow !== undefined) {
+      this._gatewayContextWindow = session.contextWindow;
+    }
+    // Also check the tokens field format from sessions list
+    if (status?.sessions?.list) {
+      const current = status.sessions.list.find(s => s.key === this.sessionKey);
+      if (current?.contextTokens !== undefined) {
+        this._gatewayContextTokens = current.contextTokens;
+      }
+    }
+    this.updateTokenDisplay();
+  }
+
+  async pollGatewayTokens() {
+    if (!this.connected && !this.relayIsGatewayProxy) return;
+    try {
+      const status = await this.request('status', {});
+      this.updateGatewayTokens(status);
+    } catch (e) {
+      // Silent fail - just use estimate
     }
   }
 
@@ -5992,15 +6301,23 @@ Example: [0, 2, 5]`;
 
     // Create chat if needed
     if (!this.currentChatId) {
-      this.currentChatId = this.generateId();
-      this.chats[this.currentChatId] = {
-        id: this.currentChatId,
-        title: (text || 'Image').slice(0, 30) + ((text || '').length > 30 ? '...' : ''),
-        messages: [],
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        agentId: this.activeAgentId
-      };
+      // Look for the most recent existing chat in this workspace first
+      const agentChats = Object.values(this.chats)
+        .filter(c => c.agentId === this.activeAgentId || (!c.agentId && this.activeAgentId === 'main'))
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      if (agentChats.length > 0) {
+        this.currentChatId = agentChats[0].id;
+      } else {
+        this.currentChatId = this.generateId();
+        this.chats[this.currentChatId] = {
+          id: this.currentChatId,
+          title: (text || 'Image').slice(0, 30) + ((text || '').length > 30 ? '...' : ''),
+          messages: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          agentId: this.activeAgentId
+        };
+      }
     }
 
     // Build message content
@@ -6225,8 +6542,17 @@ Example: [0, 2, 5]`;
     if (payload.sessionKey &&
         payload.sessionKey !== this.sessionKey &&
         !payload.sessionKey.endsWith(':' + this.sessionKey)) {
-      console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
-      return; // Different session
+      // Forward to relay client if connected (phone may use a different session key)
+      if (this.relayEncrypted && payload.sessionKey !== '__clawgpt_summarizer') {
+        console.log('Forwarding event to relay client:', payload.sessionKey);
+        this.sendRelayMessage({
+          type: 'gateway-response',
+          data: { type: 'event', event: 'chat', payload }
+        });
+      } else {
+        console.log('Ignoring event for different session:', payload.sessionKey, 'vs', this.sessionKey);
+      }
+      return; // Different session - don't process locally
     }
 
     if (state === 'delta' && content) {
@@ -6337,6 +6663,9 @@ Example: [0, 2, 5]`;
     ).catch(err => console.warn('Memory storage failed:', err));
 
     this.renderMessages();
+
+    // Poll gateway for real token count after each message
+    this.pollGatewayTokens();
 
     // Check if we should generate/update summary
     this.maybeGenerateSummary(this.currentChatId);

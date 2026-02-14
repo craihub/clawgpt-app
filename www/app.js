@@ -33,7 +33,7 @@ class ClawGPT {
     this.memoryStorage = new MemoryStorage();
 
     // Multi-agent support
-    this.agents = window.CLAWGT_AGENTS || [{ id: 'main', name: 'Main', sessionKey: 'agent:main:main', icon: '', description: 'General assistant' }];
+    this.agents = window.CLAWGT_AGENTS || [{ id: 'main', name: 'Main', sessionKey: 'agent:main:clawgt', icon: '', description: 'General assistant' }];
     this.activeAgentId = localStorage.getItem('clawgt-active-agent') || this.agents[0]?.id || 'main';
     this.agentChats = {}; // Stores chats per agent: { agentId: { chatId: chat } }
     try {
@@ -1440,16 +1440,6 @@ window.CLAWGPT_CONFIG = {
                   publicKey: this.relayCrypto.getPublicKey()
                 }));
               }
-              // Auto-close fullscreen QR overlay
-              if (this._qrFullscreenOverlay) {
-                this._qrFullscreenOverlay.remove();
-                this._qrFullscreenOverlay = null;
-              }
-              // Auto-close setup modal
-              const setupModal = document.getElementById('setupModal');
-              if (setupModal && setupModal.style.display !== 'none') {
-                setupModal.style.display = 'none';
-              }
             } else if (msg.event === 'host.connected') {
               console.log('Host reconnected');
             } else if (msg.event === 'client.disconnected') {
@@ -2166,6 +2156,24 @@ window.CLAWGPT_CONFIG = {
   }
 
   handleChatUpdate(msg) {
+    // Handle streaming delta updates from peer (desktop -> phone streaming)
+    if (msg.chatId && msg.streaming && msg.content && !msg.message && !msg.chat) {
+      const chatId = msg.chatId;
+      // Check if we're viewing this chat OR a chat for the same agent
+      const isViewingChat = this.currentChatId === chatId || this._isViewingSameAgent(chatId);
+      if (isViewingChat) {
+        this.streaming = true;
+        this.streamBuffer = msg.content;
+        // If viewing a different chatId for the same agent, switch to the peer's chat
+        if (this.currentChatId !== chatId && this.chats[chatId]) {
+          this.currentChatId = chatId;
+          this.renderChatList();
+        }
+        this.updateStreamingMessage();
+      }
+      return;
+    }
+
     // Handle incremental message updates (single message added)
     if (msg.chatId && msg.message && !msg.chat) {
       const chatId = msg.chatId;
@@ -2197,7 +2205,10 @@ window.CLAWGPT_CONFIG = {
       this.chats[chatId].updatedAt = Date.now();
       this.saveChats();
       this.renderChatList();
-      if (this.currentChatId === chatId) {
+      if (this.currentChatId === chatId || this._isViewingSameAgent(chatId)) {
+        if (this.currentChatId !== chatId) {
+          this.currentChatId = chatId;
+        }
         this.renderMessages();
       }
       console.log(`[Sync] Incremental update for chat: ${this.chats[chatId].title}`);
@@ -2243,12 +2254,33 @@ window.CLAWGPT_CONFIG = {
         });
       }
 
-      if (this.currentChatId === chat.id) {
+      // Render if viewing this chat OR a chat for the same agent
+      if (this.currentChatId === chat.id || this._isViewingSameAgent(chat.id)) {
+        // Clear streaming state since we got the final chat
+        if (this.streaming) {
+          this.streaming = false;
+          this.streamBuffer = '';
+          this.updateStreamingUI();
+        }
+        if (this.currentChatId !== chat.id) {
+          this.currentChatId = chat.id;
+          this.renderChatList();
+        }
         this.renderMessages();
       }
 
       console.log(`[Sync] Real-time update for chat: ${chat.title || chat.id}`);
     }
+  }
+
+  // Check if the current view is showing the same agent as the given chatId
+  _isViewingSameAgent(chatId) {
+    const theirChat = this.chats[chatId];
+    const ourChat = this.chats[this.currentChatId];
+    if (!theirChat) return false;
+    const theirAgent = theirChat.agentId || 'main';
+    const ourAgent = ourChat ? (ourChat.agentId || 'main') : this.activeAgentId;
+    return theirAgent === ourAgent;
   }
 
   // Broadcast chat update to connected peer
@@ -2570,44 +2602,9 @@ window.CLAWGPT_CONFIG = {
         colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M
       });
-
-      // Make QR code clickable for fullscreen view
-      qrContainer.style.cursor = 'pointer';
-      qrContainer.title = 'Click to enlarge';
-      qrContainer.onclick = () => this.showFullscreenQR(data);
     } else {
       qrContainer.innerHTML = '<p style="color: var(--text-muted);">QR library not loaded</p>';
     }
-  }
-
-  showFullscreenQR(data) {
-    // Create fullscreen overlay
-    const overlay = document.createElement('div');
-    overlay.id = 'qr-fullscreen-overlay';
-    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;background:white;z-index:99999;display:flex;align-items:center;justify-content:center;cursor:pointer;';
-    overlay.onclick = () => overlay.remove();
-
-    const qrBox = document.createElement('div');
-    qrBox.style.cssText = 'display:flex;align-items:center;justify-content:center;';
-
-    if (typeof QRCode !== 'undefined') {
-      // Size QR to 80% of the smaller viewport dimension
-      const size = Math.min(window.innerWidth, window.innerHeight) * 0.8;
-      new QRCode(qrBox, {
-        text: data,
-        width: size,
-        height: size,
-        colorDark: '#000000',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M
-      });
-    }
-
-    overlay.appendChild(qrBox);
-    document.body.appendChild(overlay);
-
-    // Store reference so we can close it when phone connects
-    this._qrFullscreenOverlay = overlay;
   }
 
   showToast(message, isError = false) {
@@ -4590,9 +4587,8 @@ Example: [0, 2, 5]`;
 
     // Reconnect with new session key if connected
     if (this.connected) {
-      // Fetch history from gateway for this workspace session
+      // Just update the session key - next message will use it
       console.log('Switched to agent:', agent.name, 'session:', agent.sessionKey);
-      this.loadHistory();
     }
   }
 
